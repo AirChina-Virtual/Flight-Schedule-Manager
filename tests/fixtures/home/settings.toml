@@ -1,0 +1,12 @@
+# vCCA 全站设置（2026-11-26 12:31 UTC 由 migrate-config 从 season.toml 生成）。
+# 只写与代码默认值（vcca/config.py DEFAULTS / Thresholds）不同的键；航季可在 season.toml 里覆盖。
+
+[vamsys]
+workspace_id = "b8d41af1-5641-4b06-a476-b39829a63d25"
+
+[airports]
+alias = { ZSJA = "ZSGS", ZPLX = "ZPMS" }
+names = { ZBAL = "BAYANHOT" }
+
+[export]
+default_cost_index = { CCA = 80, CCD = 80, BJN = 80, CAO = 150 }

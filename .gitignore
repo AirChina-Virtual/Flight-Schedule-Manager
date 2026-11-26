@@ -12,6 +12,8 @@ fr24_cache/
 webstate/
 *.db
 *.sqlite
+# ...except the small test data directory built by tools/make_fixtures.py (no secrets, see that script)
+!tests/fixtures/home/**/*.db
 
 # Local backups of edited files (git history replaces them)
 legacy/

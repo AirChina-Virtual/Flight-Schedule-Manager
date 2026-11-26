@@ -1,0 +1,7 @@
+# 测试数据（tools/make_fixtures.py 生成，勿手改）：2026-27-1 航季，只含港澳台计划文件。
+
+[season]
+name       = "2026-2027 冬春"
+start_date = "2026-10-25"
+end_date   = "2027-03-27"
+plan_files = ["国内航司港澳台航班计划（三字码）.xls"]
