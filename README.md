@@ -152,8 +152,9 @@ $VCCA_HOME/          （= /srv/vcca）
   rules/airport_grades.toml        机场飞行区等级、高原/机位排除
   rules/fleets.toml                机队分组与机型映射
   cache/fr24_cache.db              FR24 缓存（SQLite，按航班 id 累积；可随时中断续抓）
-  state/                           网页账号 users.toml、会话、任务日志 jobs/、临时文件 tmp/、FR24 会话 fr24_session.json
-/etc/vcca/vcca.env                 FR24_USER / FR24_PASSWORD（只这两项；工具只检查是否存在，不打印）
+  state/                           网页账号 users.toml、会话、任务日志 jobs/、临时文件 tmp/、FR24 会话 fr24_session.json、
+                                   网页填写的 FR24 账号 fr24_account.json（0600，优先于 vcca.env）
+/etc/vcca/vcca.env                 FR24_USER / FR24_PASSWORD（只这两项；网页没填账号时使用；工具只检查是否存在，不打印）
 ```
 
 - `VCCA_HOME` 不存在时所有命令都会报"数据目录不存在"。没有其他路径设置。
@@ -286,6 +287,6 @@ python vcca_plan.py serve                   # http://127.0.0.1:8770/
 - **`status` 报配置错误**：按提示逐条修改（所有问题一次列出）；工作区未设置时到"数据"页上传 `workspaces.db` 并选择工作区。
 - **抓取中断**：直接重新运行 `fetch`，已抓的不会重复。连续失败 8 次会自动停止。
 - **429 限流**：工具会自动降速退避；频繁出现可把 `settings.toml` 的 `[fetch] rate_per_sec` 调低。
-- **登录失败**：检查 `/etc/vcca/vcca.env` 的 `FR24_USER` / `FR24_PASSWORD`；删除 `$VCCA_HOME/state/fr24_session.json` 可强制重新登录。
+- **登录失败**：检查网页「配置 → 设置 → FR24 账户」（没填时用 `/etc/vcca/vcca.env` 的 `FR24_USER` / `FR24_PASSWORD`）；删除 `$VCCA_HOME/state/fr24_session.json` 可强制重新登录。
 - **"去向核账"失败**：`build` 会报错并停止导出，说明有 VAMSYS 航线没有去向或重复去向，属于程序问题，需要修代码。
 - **CSV 自检失败**：`export` 不写 CSV、退出码 1，并列出问题（如机队 ID 不存在、缺机场）。

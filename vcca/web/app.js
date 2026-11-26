@@ -143,7 +143,7 @@ function pageOverview(P,arg,tok){
   h.push('<h2>明细</h2><div class="cols2"><div class="panel"><h3>CAAC 计划文件</h3><div class="tbox"><table class="tbl"><tbody>'+pl.files.map(function(f){return "<tr><td>"+(f.exists?'<span class="tag ok">OK</span>':'<span class="tag bad">缺失</span>')+"</td><td class=\"wrap\">"+esc(f.name)+"</td><td>"+(f.exists?fmtSize(f.size):"")+"</td><td>"+(f.exists?fmtTime(f.mtime,false):"")+"</td></tr>";}).join("")+"</tbody></table></div>"+
    (pl.rows!=null?'<div class="kv2" style="margin-top:8px"><div>各文件行数</div><div>'+Object.keys(pl.rows_by_file).map(function(k){return esc(k)+" "+pl.rows_by_file[k];}).join("<br>")+"</div><div>航段（按航司）</div><div>"+pl.legs_by_op.map(function(x){return esc(x[0])+" "+x[1];}).join(", ")+"</div><div>单日行航段</div><div>"+pl.single_day+"</div><div>FD23/FD24 众数</div><div>"+esc(pl.fd23)+"/"+esc(pl.fd24)+"</div></div>":"")+"</div>");
   h.push('<div class="panel"><h3>VAMSYS</h3>'+(v.ok?'<div class="kv2"><div>文件</div><div>'+esc(v.path)+" ("+fmtSize(v.size)+", "+fmtTime(v.mtime)+")</div><div>工作区</div><div>"+esc(v.workspace_name)+" · revision "+v.revision+" · StorageRevision "+v.storage_revision+"</div><div>机场/机队/飞机/航路</div><div>"+[v.counts.airports,v.counts.fleets,v.counts.aircraft,v.counts.routings].join(" / ")+"</div><div>航线</div><div>"+v.counts.routes+"（商业 "+v.counts.commercial_routes+"，特殊 "+v.counts.special_routes+"，已设 End Date "+v.counts.routes_with_end_date+"）</div><div>按呼号前缀</div><div>"+Object.keys(v.counts.routes_by_op).map(function(k){return k+" "+v.counts.routes_by_op[k];}).join(", ")+"</div></div>":'<div class="msg err">'+esc(v.error||("数据库不存在: "+v.path))+"</div>")+"</div>");
-  h.push('<div class="panel"><h3>FR24 账号（只检查是否存在，不显示内容）</h3><div class="tbox"><table class="tbl"><tbody>'+cr.checked.map(function(x){return "<tr><td>"+(x.user&&x.password?'<span class="tag ok">OK</span>':(x.user||x.password?'<span class="tag bad">不全</span>':'<span class="tag">无</span>'))+'</td><td class="wrap">'+esc(x.path)+"</td><td>FR24_USER "+(x.user?"有":"无")+"，FR24_PASSWORD "+(x.password?"有":"无")+"</td></tr>";}).join("")+"</tbody></table></div><p>将使用："+esc(cr.source||"（未找到账号）")+"</p></div>");
+  h.push('<div class="panel"><h3>FR24 账号（只检查是否存在，不显示内容）</h3><div class="tbox"><table class="tbl"><tbody>'+cr.checked.map(function(x){return "<tr><td>"+(x.user&&x.password?'<span class="tag ok">OK</span>':(x.user||x.password?'<span class="tag bad">不全</span>':'<span class="tag">无</span>'))+'</td><td class="wrap">'+esc(x.path)+"</td><td>账号 "+(x.user?"有":"无")+"，密码 "+(x.password?"有":"无")+"</td></tr>";}).join("")+"</tbody></table></div><p>将使用："+esc(CRED_SRC[cr.source]||cr.source||"（未找到账号）")+' · <a href="#/config">在配置页填写 / 修改</a></p></div>');
   h.push('<div class="panel"><h3>FR24 缓存</h3><div class="kv2"><div>目录</div><div>'+esc(ca.dir)+"</div><div>fr24_cache.db</div><div>"+(ca.db.exists?fmtSize(ca.db.size)+"，"+fmtTime(ca.db.mtime):"尚未创建")+"</div>"+(st?"<div>行数</div><div>"+st.rows+"</div><div>最后抓取</div><div>"+esc(st.last_fetch_fmt||"无")+"</div><div>目标</div><div>"+esc(JSON.stringify(st.targets_by_priority))+"</div><div>过期目标</div><div>"+st.stale_targets+"</div>":"")+"</div></div></div>");
   h.push('<p class="muted">时间按浏览器时区显示（'+tzLabel(new Date())+'）；运行文件夹名与报告内时间为 UTC。</p>');
   P.innerHTML=h.join("");bindRefresh();
@@ -306,60 +306,296 @@ function pageData(P,arg,tok){
 }
 
 /* ---------- config ---------- */
+/* Settings form: [section, key, label, type, hint]. Types: text date int num codes ints pair pairs efftime ci ws. */
+var CFG_FORM=[
+ {t:"本航季",note:"只对当前航季生效（写入 season.toml）",f:[
+  ["season","name","名称","text","留空 = 用文件夹名"],
+  ["season","start_date","开始日期","date","留空 = 由计划文件 FD23 众数推导"],
+  ["season","end_date","结束日期","date","留空 = 由计划文件 FD24 众数推导"],
+  ["season","plan_tz_offset_min","计划时刻时区（分钟）","int","CAAC 计划为北京时间 = 480"]]},
+ {t:"导出",f:[
+  ["export","effective_time","生效时间","efftime","停用航线的 End Date、新建航线的 Start Date"],
+  ["export","default_cost_index","默认 Cost Index","ci","新建航线使用；每个目标航司都要填"]]},
+ {t:"VAMSYS",f:[
+  ["vamsys","workspace_id","工作区","ws",""],
+  ["vamsys","collection","Collection","int",""]]},
+ {t:"航司",f:[
+  ["operators","target","目标航司","codes","ICAO 三字码，逗号分隔"],
+  ["operators","cargo","货运航司","codes","必须是目标航司之一"],
+  ["operators","number_prefix","航班号前缀","text","呼号 CCA1234 → 航班号 CA1234"]]},
+ {t:"FR24 抓取",f:[
+  ["fetch","rate_per_sec","每秒请求数","num",""],
+  ["fetch","ttl_uncertain_h","不确定航班重抓间隔（小时）","int","P1 优先级"],
+  ["fetch","ttl_stable_h","稳定航班重抓间隔（小时）","int","P2 优先级"],
+  ["fetch","deep_scan_every_days","全机队注册号扫描间隔（天）","int",""],
+  ["fetch","reg_drop_after_days","注册号多少天未出现即移出","int",""],
+  ["fetch","max_consecutive_failures","连续失败多少次停止抓取","int",""]]},
+ {t:"阈值",fold:true,note:"成对的值是 起飞/落地 容差（分钟）。改之前可先看结果页里每条阈值影响了多少航线。",f:[
+  ["thresholds","recent_window_days","近期窗口（天）","int",""],
+  ["thresholds","time_tolerance_min","时刻视为一致（分钟）","int",""],
+  ["thresholds","bank_merge","时段聚类容差","pairs","满足任意一组即合并"],
+  ["thresholds","plan_attach","计划子段归入 FR24 时段","pair",""],
+  ["thresholds","plan_calibrate","计划时段校准到最近 FR24 时段","pair",""],
+  ["thresholds","vamsys_bank_match","现行 ID 吻合 FR24 时段","pair",""],
+  ["thresholds","micro_split_merge","单时段微拆分合并容差","pair",""],
+  ["thresholds","extra_slot_separation","离所有计划时段多远算缺失时段","pair",""],
+  ["thresholds","time_override_min_acts","FR24 覆盖计划时刻所需实飞次数","int",""],
+  ["thresholds","weekday_add_min_weeks","增补星期所需周数","int",""],
+  ["thresholds","weekday_drop_min_weeks","删除星期所需周数","int",""],
+  ["thresholds","weekday_drop_min_coverage","删除星期：其他计划星期最低执行率","num","0–1"],
+  ["thresholds","fr24_ac_min_share","机型计入宽/窄体的最低占比","num","0–1；0 = 任意 2 班都算"],
+  ["thresholds","single_day_promote_acts","单日行升格所需实飞次数","int",""],
+  ["thresholds","carrier_change_min_acts","判定换承运所需近期实飞次数","int",""],
+  ["thresholds","fr24_add_min_acts","计划外补漏新增所需实飞次数","int",""],
+  ["thresholds","fr24_add_min_weeks","计划外补漏新增所需周数","int",""],
+  ["thresholds","rotation_gap_add_min_acts","轮换缺口补漏所需实飞次数","int",""],
+  ["thresholds","extra_slot_min_acts","缺失时段所需实飞次数","int",""],
+  ["thresholds","bank_supersede_days","换季中途调时（天）","int",""],
+  ["thresholds","slot_pair_day_penalty","配对星期差异罚分","int",""],
+  ["thresholds","dst_shift_min","整点偏移候选（分钟）","ints","夏令时等整小时偏移，逗号分隔"],
+  ["thresholds","bank_weight_actual","时段权重：实飞","int",""],
+  ["thresholds","bank_weight_recent","时段权重：近期","int",""],
+  ["thresholds","real_time_round_min","实际时刻取整（分钟）","int",""],
+  ["thresholds","never_flown_lookback_days","判定\"从未飞过\"的回看天数","int",""]]}
+];
+var EFFTIME_AUTO="next_bjt_midnight";
+function canon(v){if(Array.isArray(v))return "["+v.map(canon).join(",")+"]";
+ if(v&&typeof v==="object")return "{"+Object.keys(v).sort().map(function(k){return JSON.stringify(k)+":"+canon(v[k]);}).join(",")+"}";
+ return JSON.stringify(v);}
+function isEmptyVal(v){return v===""||v==null||(typeof v==="object"&&Object.keys(v).length===0);}
+function cfgShow(v,ty){
+ if(v===""||v==null)return "（空）";
+ if(ty==="pair")return v[0]+"/"+v[1];
+ if(ty==="pairs")return v.map(function(p){return p[0]+"/"+p[1];}).join(", ");
+ if(ty==="efftime")return v===EFFTIME_AUTO?"次日北京时间 0 点":v+" UTC";
+ if(Array.isArray(v))return v.join(", ");
+ if(typeof v==="object"){var k=Object.keys(v);return k.length?k.map(function(x){return x+" "+v[x];}).join(" · "):"（空）";}
+ return String(v);}
+
 function pageConfig(P,arg,tok){
  api("GET","api/config?"+sq()).then(function(d){if(!alive(tok))return;
-  var files=d.files;if(S.cfgKey==="effective"){pageEffective(P,d);return;}
-  var cur=files.filter(function(f){return f.key===S.cfgKey;})[0]||files[0];S.cfgKey=cur.key;
-  P.innerHTML='<h1>配置 · '+esc(S.season)+'</h1><div class="ftabs" id="ftabs"></div><div class="cfgwrap"><div><div class="row" style="margin-bottom:6px"><span class="mono muted" id="cpath" style="flex:1;overflow-wrap:anywhere"></span><span id="cdirty"></span></div>'+
-   '<div class="editor"><pre class="gut" id="gut"></pre><textarea id="ced" spellcheck="false" wrap="off"></textarea></div>'+
-   '<div class="row" style="margin-top:8px"><button class="btn" id="cval">仅校验</button><button class="btn primary" id="csave">保存 (Ctrl+S)</button><button class="btn" id="creload">放弃修改</button><span class="muted">保存 = 校验通过后备份旧版本再写入</span></div><div id="cres"></div></div>'+
-   '<aside class="panel"><h3 style="margin-top:0">历史版本</h3><div id="chist"></div></aside></div>';
-  if(d.busy)$("#cres").innerHTML='<div class="msg warn">有任务正在运行，暂时不能保存。</div>';
-  cfgTabs(files,cur.key);
-  var ed=$("#ced"),gut=$("#gut"),errLine=null;
-  ed.value=cur.text;$("#cpath").textContent=cur.path;
-  function setDirty(v){S.dirty=v;$("#cdirty").innerHTML=v?'<span class="dirty">● 未保存</span>':"";}
-  function gutter(){var n=ed.value.split("\n").length,o=[];for(var i=1;i<=n;i++)o.push(i===errLine?"<b>"+i+"</b>":String(i));gut.innerHTML=o.join("\n")+"\n";gut.scrollTop=ed.scrollTop;}
-  ed.oninput=function(){setDirty(ed.value!==cur.text);gutter();};ed.onscroll=function(){gut.scrollTop=ed.scrollTop;};
-  ed.onkeydown=function(e){if(e.key==="Tab"){e.preventDefault();var s=ed.selectionStart;ed.setRangeText("    ",s,ed.selectionEnd,"end");ed.oninput();}};
-  gutter();setDirty(false);
-  function show(r,saved){errLine=r.syntax&&r.syntax.line||null;gutter();
-   if(r.ok){$("#cres").innerHTML='<div class="msg ok">'+(saved?"已保存"+(r.backup?"（旧版本备份为 "+esc(r.backup)+"）":""):"校验通过（未保存）")+(r.summary?" · "+esc(r.summary.season)+" "+esc(r.summary.start)+" ~ "+esc(r.summary.end)+" · 生效 "+esc(r.summary.effective_time)+" UTC":"")+"</div>"+(r.warnings&&r.warnings.length?'<div class="msg warn"><b>警告</b>'+errList(r.warnings)+"</div>":"");}
-   else{$("#cres").innerHTML='<div class="msg err"><b>'+({syntax:"TOML 语法错误",config:"配置校验失败",conflict:"保存冲突"}[r.stage]||"失败")+"</b>"+(r.syntax&&r.syntax.line?"（第 "+r.syntax.line+" 行，第 "+r.syntax.col+" 列）":"")+errList(r.errors)+(saved===false?"文件未改动。":"")+"</div>";
-    if(errLine){var lines=ed.value.split("\n"),pos=0;for(var i=0;i<errLine-1&&i<lines.length;i++)pos+=lines[i].length+1;ed.focus();ed.setSelectionRange(pos,pos+(lines[errLine-1]||"").length);ed.scrollTop=Math.max(0,(errLine-5)*18);}}}
-  function post(path,body,saved){return api("POST","api/config/"+path,body).then(function(r){show(r,saved);return r;}).catch(function(e){if(e.data&&e.data.stage)show(e.data,saved?false:undefined);else $("#cres").innerHTML='<div class="msg err">'+esc(e.message)+"</div>";throw e;});}
-  $("#cval").onclick=function(){post("validate",{season:S.season,key:cur.key,text:ed.value}).catch(function(){});};
-  function save(){if(d.busy){toast("有任务正在运行，暂时不能保存",true);return;}
-   post("save",{season:S.season,key:cur.key,text:ed.value,mtime_ns:cur.mtime_ns},true).then(function(r){cur.text=ed.value;cur.mtime_ns=r.mtime_ns;setDirty(false);toast("已保存");loadHist();}).catch(function(){});}
-  $("#csave").onclick=save;
-  ed.addEventListener("keydown",function(e){if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();save();}});
-  $("#creload").onclick=function(){if(!S.dirty||confirm("放弃未保存的修改？")){setDirty(false);route(true);}};
-  function loadHist(){api("GET","api/config?"+sq()).then(function(dd){var f=dd.files.filter(function(x){return x.key===cur.key;})[0];cur.history=f.history;drawHist();});}
-  function drawHist(){var H=$("#chist");if(!cur.history.length){H.innerHTML='<div class="muted">还没有历史版本（每次保存前自动备份）。</div>';return;}
-   H.innerHTML='<ul class="flist">'+cur.history.map(function(v){return '<li><span class="mono">'+esc(v.version)+'</span><span><button class="btn" data-pv="'+v.version+'">预览</button> <button class="btn" data-rs="'+v.version+'">恢复</button></span></li>';}).join("")+'</ul><div id="hprev"></div>';
-   $$("[data-pv]",H).forEach(function(b){b.onclick=function(){api("GET","api/config/history?"+sq({key:cur.key,version:b.getAttribute("data-pv")})).then(function(r){$("#hprev").innerHTML="<h3>"+esc(r.version)+'</h3><pre class="preview">'+esc(r.text)+"</pre>";}).catch(function(e){toast(e.message,true);});};});
-   $$("[data-rs]",H).forEach(function(b){b.onclick=function(){var ver=b.getAttribute("data-rs");if(!confirm("用历史版本 "+ver+" 替换当前文件？（当前文件会先备份，恢复同样需要通过校验）"))return;
-    post("restore",{season:S.season,key:cur.key,version:ver,mtime_ns:cur.mtime_ns},true).then(function(){S.dirty=false;toast("已恢复");route(true);}).catch(function(){});};});}
-  drawHist();
+  var files=d.files;
+  var cur=files.filter(function(f){return f.key===S.cfgKey;})[0];
+  if(!cur){S.cfgKey="form";pageCfgForm(P,d);}else pageCfgFile(P,d,cur);
  }).catch(fail(P,tok));
 }
-
+function cfgHead(d){var h='<div id="cfgpage"><h1>配置 · '+esc(S.season)+'</h1><div class="ftabs" id="ftabs"></div>';
+ if(S.flash){h+=S.flash;S.flash=null;}
+ if(d.busy)h+='<div class="msg warn">有任务正在运行，暂时不能保存。</div>';
+ return h;}
 function cfgTabs(files,key){
- $("#ftabs").innerHTML=files.map(function(f){return '<button data-k="'+f.key+'"'+(f.key===key?' class="on"':"")+">"+esc(f.label)+"</button>";}).join("")+
-  '<button data-k="effective"'+(key==="effective"?' class="on"':"")+">生效值</button>";
- $$("#ftabs button").forEach(function(b){b.onclick=function(){if(!confirmLeave())return;S.cfgKey=b.getAttribute("data-k");route(true);};});
+ $("#ftabs").innerHTML='<button data-k="form"'+(key==="form"?' class="on"':"")+">设置</button>"+'<span class="ftsep">TOML 文件</span>'+
+  files.map(function(f){return '<button data-k="'+f.key+'" title="'+esc(f.path)+'"'+(f.key===key?' class="on"':"")+">"+esc(f.label)+"</button>";}).join("");
+ $$("#ftabs button").forEach(function(b){b.onclick=function(){if(b.classList.contains("on")||!confirmLeave())return;S.cfgKey=b.getAttribute("data-k");route(true);};});
+}
+
+/* ----- settings form ----- */
+function pageCfgForm(P,d){
+ var e=d.effective||{rows:[],warnings:[]},rows={},F=[];
+ e.rows.forEach(function(r){rows[r.section+"."+r.key]=r;});
+ var mt={};d.files.forEach(function(f){mt[f.key]=f.mtime_ns;});
+ CFG_FORM.forEach(function(g){g.f.forEach(function(f){var r=rows[f[0]+"."+f[1]];if(!r)return;
+  f.i=F.length;f.cur=r.value;f.def=r.default;f.fb=r.fallback!==undefined?r.fallback:r.default;f.src=r.source;f.reset=false;F.push(f);});});
+ function field(sect,key){return F.filter(function(f){return f[0]===sect&&f[1]===key;})[0];}
+ var h=cfgHead(d);
+ if(e.warnings&&e.warnings.length)h+='<div class="msg warn"><b>警告</b>'+errList(e.warnings)+"</div>";
+ h+='<p class="muted">每项最终的值 = 代码默认 → 全站 settings.toml → 本航季 season.toml（后者覆盖前者）。改动会写回它当前所在的文件；改回默认值即从文件里删掉该键。'+
+  '计划文件、机场别名/名称、机场等级和机队规则请在上方的 TOML 文件标签里改。</p>';
+ CFG_FORM.forEach(function(g,gi){var fs=g.f.filter(function(f){return f.i!=null;});if(!fs.length)return;
+  var nChg=fs.filter(function(f){return f.src!=="default";}).length;
+  var head='<h2>'+esc(g.t)+(g.note?' <span class="muted fnote">'+esc(g.note)+"</span>":"")+"</h2>";
+  var body=fs.map(rowHtml).join("");
+  if(g.fold)h+='<details class="panel fgroup" data-g="'+gi+'"'+(S.cfgOpen&&S.cfgOpen[gi]?" open":"")+'><summary><b>'+esc(g.t)+'</b> <span class="muted">'+fs.length+" 项"+(nChg?"，"+nChg+" 项不是默认值":"")+"</span></summary>"+
+   (g.note?'<p class="muted fnote">'+esc(g.note)+"</p>":"")+body+"</details>";
+  else h+='<section class="panel fgroup">'+head+body+"</section>";
+  if(g.t==="FR24 抓取")h+='<section class="panel fgroup" id="fr24acct"></section>';});
+ h+='<details class="panel fgroup" id="effall"><summary><b>全部生效值</b> <span class="muted">只读，包括表单里没有的项</span></summary>'+effTable(e)+"</details>";
+ h+='<div id="fres"></div><div class="savebar"><span id="fcount" class="muted">没有修改</span><span class="sp"></span><button class="btn" id="fundo" hidden>撤销</button><button class="btn primary" id="fsave" disabled>保存</button></div></div>';
+ P.innerHTML=h;cfgTabs(d.files,"form");
+ if(d.fr24)drawFr24Account($("#fr24acct"),d.fr24,d.busy);
+ $$("details[data-g]",P).forEach(function(x){x.ontoggle=function(){S.cfgOpen=S.cfgOpen||{};S.cfgOpen[x.getAttribute("data-g")]=x.open;};});
+ if($("#effonly"))$("#effonly").onchange=function(){var only=this.checked;$$("#efftbl tr.same").forEach(function(tr){tr.style.display=only?"none":"";});};
+
+ function ciOps(){var t=field("operators","target"),ops=t?(t.cur||[]).slice():[];
+  if(t&&$('[data-in="'+t.i+'"]',P)){var r=readField(t);if(!r.err)ops=r.v;}
+  var ci=field("export","default_cost_index"),have=ci?Object.keys(ci.cur||{}):[];if(!ops.length)return have;
+  return have.filter(function(k){return ops.indexOf(k)>=0;}).concat(ops.filter(function(k){return have.indexOf(k)<0;}));}   /* keep the file's key order */
+ function inputHtml(f,v){var ty=f[3],id='data-in="'+f.i+'"';
+  switch(ty){
+  case "text":return '<input type="text" '+id+' value="'+esc(v)+'">';
+  case "date":return '<input type="date" '+id+' value="'+esc(v)+'">';
+  case "int":case "num":return '<input type="number" '+id+' step="'+(ty==="int"?"1":"any")+'" value="'+esc(v)+'">';
+  case "codes":case "ints":return '<input type="text" '+id+' value="'+esc((v||[]).join(", "))+'">';
+  case "pairs":return '<input type="text" '+id+' value="'+esc(cfgShow(v,ty))+'" placeholder="45/60, 20/75">';
+  case "pair":return '<span class="pair"><span class="muted">起飞 ±</span><input type="number" step="1" min="0" '+id+' value="'+esc(v[0])+'"><span class="muted">落地 ±</span><input type="number" step="1" min="0" '+id+' value="'+esc(v[1])+'"></span>';
+  case "efftime":var auto=v===EFFTIME_AUTO;return '<span class="pair"><select class="in" '+id+'><option value="auto"'+(auto?" selected":"")+'>次日北京时间 0 点（自动）</option><option value="fixed"'+(auto?"":" selected")+'>固定时间（UTC）</option></select>'+
+   '<input type="text" '+id+' placeholder="YYYY-MM-DD HH:MM:SS" value="'+(auto?"":esc(v))+'"'+(auto?" hidden":"")+"></span>";
+  case "ci":return '<span class="pair">'+ciOps().map(function(op){return '<label class="ci"><b>'+esc(op)+'</b><input type="number" step="1" min="0" '+id+' data-op="'+esc(op)+'" value="'+(v&&v[op]!=null?esc(v[op]):"")+'"></label>';}).join("")+"</span>";
+  case "ws":return '<span class="mono">'+esc(v||"未设置")+'</span> <a href="#/data">到数据页选择</a>';}
+  return "";}
+ function srcHtml(f){
+  var tag=f.reset?'<span class="tag chg">保存后恢复</span>':f.src==="default"?'<span class="muted">默认</span>':'<span class="tag'+(f.src==="season"?" rv":" ok")+'">'+(f.src==="season"?"本航季":"全站")+"</span>";
+  var ovr=f.src==="season"&&f[0]!=="season",can=f.src!=="default"&&!f.reset&&f[3]!=="ws"&&(f[0]==="season"||!isEmptyVal(f.fb));
+  var rb=can?'<button class="btn sm" data-reset="'+f.i+'" title="'+(ovr?"删除本航季的覆盖，改用全站值 "+esc(cfgShow(f.fb,f[3])):"从文件里删掉这一项"+(isEmptyVal(f.def)?"":"，使用代码默认值 "+esc(cfgShow(f.def,f[3]))))+'">'+
+   (ovr?"用全站值":isEmptyVal(f.def)?"清空":"恢复默认")+"</button>":"";
+  return tag+rb;}
+ function rowHtml(f){
+  var hint=[];if(f[4])hint.push(esc(f[4]));if(f.src!=="default"&&!isEmptyVal(f.def)&&canon(f.cur)!==canon(f.def))hint.push("默认 "+esc(cfgShow(f.def,f[3])));
+  return '<div class="frow" data-row="'+f.i+'"><div class="flab">'+esc(f[2])+"<code>"+esc(f[1])+'</code></div><div class="fin"><div class="fctl">'+inputHtml(f,f.reset?f.fb:f.cur)+"</div>"+
+   (hint.length?'<div class="fhint">'+hint.join(" · ")+"</div>":"")+'<div class="ferr"></div></div><div class="fsrc">'+srcHtml(f)+"</div></div>";}
+ function readField(f){var els=$$('[data-in="'+f.i+'"]',P),ty=f[3],s=els[0]?els[0].value.trim():"",i,o;
+  function bad(m){return {err:m};}
+  function isInt(x){return x!==""&&/^-?\d+$/.test(x);}
+  switch(ty){
+  case "text":case "date":return {v:s};
+  case "int":if(!isInt(s))return bad("应为整数");return {v:parseInt(s,10)};
+  case "num":if(s===""||!isFinite(Number(s)))return bad("应为数字");return {v:Number(s)};
+  case "codes":return {v:s.split(/[\s,，]+/).filter(Boolean).map(function(x){return x.toUpperCase();})};
+  case "ints":o=[];s.split(/[\s,，]+/).filter(Boolean).forEach(function(x){o.push(isInt(x)?parseInt(x,10):NaN);});
+   return o.some(isNaN)?bad("应为逗号分隔的整数"):{v:o};
+  case "pairs":o=[];var parts=s.split(/[,，;；]+/).map(function(x){return x.trim();}).filter(Boolean);
+   for(i=0;i<parts.length;i++){var m=/^(\d+)\s*\/\s*(\d+)$/.exec(parts[i]);if(!m)return bad("格式：起飞/落地，多组用逗号分隔，如 45/60, 20/75");o.push([+m[1],+m[2]]);}
+   return o.length?{v:o}:bad("至少要有一组");
+  case "pair":var a=els[0].value.trim(),b=els[1].value.trim();if(!isInt(a)||!isInt(b))return bad("起飞和落地都应为整数");return {v:[parseInt(a,10),parseInt(b,10)]};
+  case "efftime":if(els[0].value==="auto")return {v:EFFTIME_AUTO};var t=els[1].value.trim();
+   if(!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(t))return bad("格式 YYYY-MM-DD HH:MM:SS（UTC）");return {v:t.length===16?t+":00":t};
+  case "ci":o={};for(i=0;i<els.length;i++){var op=els[i].getAttribute("data-op"),x=els[i].value.trim();if(!isInt(x)||+x<0)return bad(op+" 应为非负整数");o[op]=parseInt(x,10);}return {v:o};
+  case "ws":return {v:f.cur};}
+  return {v:f.cur};}
+ function collect(){var ch=[],errs=0;
+  F.forEach(function(f){var row=$('[data-row="'+f.i+'"]',P),r=readField(f),c=null;
+   row.querySelector(".ferr").textContent=r.err||"";row.classList.toggle("bad",!!r.err);
+   if(r.err)errs++;
+   else if(f.reset)c={section:f[0],key:f[1],value:null};
+   else if(canon(r.v)!==canon(f.cur))c={section:f[0],key:f[1],value:r.v};
+   row.classList.toggle("edited",!!c||!!r.err);if(c)ch.push(c);});
+  return {changes:ch,errs:errs};}
+ function update(){var r=collect(),n=r.changes.length;S.dirty=n>0||r.errs>0;
+  $("#fcount").innerHTML=r.errs?'<span class="errc">'+r.errs+" 项格式不对</span>":n?'<span class="dirty">● '+n+" 项未保存</span>":"没有修改";
+  $("#fundo").hidden=!S.dirty;$("#fsave").disabled=!n||r.errs>0||d.busy;
+  $$("details[data-g]",P).forEach(function(x){if(x.querySelector(".frow.edited"))x.open=true;});}
+ function rerow(f){var row=$('[data-row="'+f.i+'"]',P);row.outerHTML=rowHtml(f);}
+ var W=$("#cfgpage");W.oninput=onEdit;W.onchange=onEdit;
+ function onEdit(ev){var el=ev.target,i=el.getAttribute&&el.getAttribute("data-in");if(i==null)return;var f=F[+i];
+  if(f[3]==="efftime"&&el.tagName==="SELECT"){var t=$$('[data-in="'+f.i+'"]',P)[1];t.hidden=el.value==="auto";if(!t.hidden&&!t.value)t.focus();}
+  if(f.reset){f.reset=false;$('[data-row="'+f.i+'"] .fsrc',P).innerHTML=srcHtml(f);}
+  if(f[0]==="operators"&&f[1]==="target"&&ev.type==="change"){var ci=field("export","default_cost_index");if(ci){var keep=readField(ci);
+   var row=$('[data-row="'+ci.i+'"] .fctl',P);row.innerHTML=inputHtml(ci,keep.err?ci.cur:keep.v);}}
+  update();}
+ W.onclick=(function(ev){var b=ev.target.closest&&ev.target.closest("[data-reset]");if(!b)return;var f=F[+b.getAttribute("data-reset")];f.reset=true;rerow(f);update();});
+ $("#fundo").onclick=function(){S.dirty=false;route(true);};
+ $("#fsave").onclick=function(){var r=collect();if(!r.changes.length||r.errs)return;var btn=this;btn.disabled=true;$("#fres").innerHTML="";
+  api("POST","api/config/form",{season:S.season,changes:r.changes,mtimes:mt}).then(function(res){S.dirty=false;
+   var sm=res.summary;S.flash='<div class="msg ok">已保存 '+r.changes.length+" 项"+(res.files&&res.files.length?"（写入 "+esc(res.files.join("、"))+"，旧版本已自动备份）":"")+
+    (sm?" · "+esc(sm.season)+" "+esc(sm.start)+" ~ "+esc(sm.end)+" · 生效 "+esc(sm.effective_time)+" UTC":"")+"</div>"+
+    (res.warnings&&res.warnings.length?'<div class="msg warn"><b>警告</b>'+errList(res.warnings)+"</div>":"");
+   toast("已保存");route(true);})
+  .catch(function(e){var x=e.data||{};btn.disabled=false;
+   $("#fres").innerHTML='<div class="msg err"><b>'+({config:"配置校验失败",conflict:"保存冲突",syntax:"TOML 语法错误"}[x.stage]||"保存失败")+"</b>"+(x.errors&&x.errors.length?errList(x.errors):" "+esc(e.message))+
+    "没有写入任何文件。"+(x.stage==="conflict"?' <button class="btn sm" id="freload">重新加载（放弃修改）</button>':"")+"</div>";
+   if($("#freload"))$("#freload").onclick=function(){S.dirty=false;route(true);};
+   $("#fres").scrollIntoView({block:"nearest"});});};
+ update();
+}
+/* FR24 account: saved on its own (not part of the TOML form); the password is write-only */
+var CRED_SRC={WEB:"网页填写的账号",ENV:"环境变量（/etc/vcca/vcca.env）"};
+function drawFr24Account(box,a,busy){
+ var envOk=a.env.user&&a.env.password,web=!!(a.user&&a.has_password);
+ var using=a.source?'<span class="tag ok">'+esc(CRED_SRC[a.source]||a.source)+"</span>":'<span class="tag bad">没有账号，fetch 无法登录</span>';
+ box.innerHTML='<h2>FR24 账户 <span class="muted fnote">单独保存，立即生效；密码保存后不再显示</span></h2>'+
+  '<div class="frow"><div class="flab">账号<code>FR24 登录邮箱</code></div><div class="fin"><div class="fctl"><input type="text" id="fau" autocomplete="off" spellcheck="false" value="'+esc(a.user)+'"></div></div><div class="fsrc">'+(web?'<span class="tag ok">已保存</span>':'<span class="muted">未填写</span>')+"</div></div>"+
+  '<div class="frow"><div class="flab">密码</div><div class="fin"><div class="fctl"><input type="password" id="fap" autocomplete="new-password" placeholder="'+(web?"已保存，留空 = 不修改":"")+'"></div>'+
+  '<div class="fhint">保存在服务器 $VCCA_HOME/state/fr24_account.json（只有服务账号可读）。保存后会清掉缓存的 FR24 登录，下次抓取用新账号登录。</div><div class="ferr" id="faerr"></div></div><div class="fsrc"></div></div>'+
+  '<div class="row" style="padding:8px 0 4px 8px"><button class="btn primary" id="fasave"'+(busy?" disabled":"")+'>保存账户</button>'+(web?'<button class="btn" id="faclear"'+(busy?" disabled":"")+'>删除网页账户</button>':"")+
+  '<span class="muted">抓取将使用：</span>'+using+(web&&envOk?'<span class="muted">（环境变量里也有账号，网页填写的优先）</span>':"")+"</div>";
+ function err(m){$("#faerr").textContent=m||"";}
+ function done(info,msg){toast(msg);drawFr24Account(box,info,busy);}
+ function fail(e){err(e.message);}
+ $("#fasave").onclick=function(){var u=$("#fau").value.trim(),p=$("#fap").value;err("");
+  if(!u)return err("请填写账号");if(!p&&!(web&&u===a.user))return err("请填写密码");
+  this.disabled=true;var b=this;api("POST","api/fr24/account",{user:u,password:p}).then(function(info){done(info,"FR24 账户已保存");}).catch(function(e){b.disabled=false;fail(e);});};
+ if($("#faclear"))$("#faclear").onclick=function(){
+  if(!confirm("删除网页填写的 FR24 账户？"+(envOk?"之后改用环境变量里的账号。":"环境变量里也没有账号，之后 fetch 将无法登录。")))return;
+  api("POST","api/fr24/account",{clear:true}).then(function(info){done(info,"已删除网页填写的 FR24 账户");}).catch(fail);};
 }
 function fmtVal(v){return typeof v==="string"?JSON.stringify(v):JSON.stringify(v).replace(/,/g,", ").replace(/:/g," = ");}
-function pageEffective(P,d){var e=d.effective||{rows:[],warnings:[]};
- P.innerHTML='<h1>配置 · '+esc(S.season)+'</h1><div class="ftabs" id="ftabs"></div>'+
-  '<p class="muted">每个配置键最终生效的值和来源：<b>默认</b>（代码 DEFAULTS）→ <b>全站</b>（'+esc(e.settings_file||"settings.toml")+'）→ <b>航季</b>（'+esc(e.season_file||"season.toml")+'）。与默认值不同的行高亮。</p>'+
-  '<label class="chk"><input type="checkbox" id="effonly"> 只看与默认不同的</label>'+
-  (e.warnings&&e.warnings.length?'<div class="msg warn"><b>警告</b>'+errList(e.warnings)+"</div>":"")+
+function effTable(e){
+ return '<label class="chk" style="margin:8px 0"><input type="checkbox" id="effonly"> 只看与默认不同的</label>'+
   '<div class="tbox"><table class="tbl" id="efftbl"><thead><tr><th>节</th><th>键</th><th>生效值</th><th>来源</th><th>默认值</th></tr></thead><tbody>'+
   e.rows.map(function(r){return '<tr class="'+(r.changed?"chg":"same")+'"'+(r.changed?' style="background:var(--chg)"':"")+'><td class="mono">['+esc(r.section)+']</td><td class="mono">'+esc(r.key)+'</td><td class="mono wrap">'+esc(fmtVal(r.value))+"</td><td>"+(r.source==="default"?'<span class="muted">默认</span>':'<span class="tag'+(r.source==="season"?" rv":" ok")+'">'+esc(r.source_label)+"</span>")+'</td><td class="mono wrap muted">'+esc(fmtVal(r.default))+"</td></tr>";}).join("")+
-  "</tbody></table></div>";
- cfgTabs(d.files,"effective");
- $("#effonly").onchange=function(){var only=this.checked;$$("#efftbl tr.same").forEach(function(tr){tr.style.display=only?"none":"";});};
+  "</tbody></table></div>";}
+
+/* ----- TOML file editor ----- */
+function lineDiff(a,b){var n=a.length,m=b.length,L=[],i,j,out=[];
+ for(i=0;i<=n;i++)L.push(new Int32Array(m+1));
+ for(i=n-1;i>=0;i--)for(j=m-1;j>=0;j--)L[i][j]=a[i]===b[j]?L[i+1][j+1]+1:Math.max(L[i+1][j],L[i][j+1]);
+ i=0;j=0;while(i<n||j<m){if(i<n&&j<m&&a[i]===b[j]){out.push([" ",a[i]]);i++;j++;}else if(j>=m||(i<n&&L[i+1][j]>=L[i][j+1])){out.push(["-",a[i]]);i++;}else{out.push(["+",b[j]]);j++;}}
+ return out;}
+function diffHtml(a,b){var d=lineDiff(a.replace(/\r/g,"").split("\n"),b.replace(/\r/g,"").split("\n")),show=d.map(function(){return false;}),k,o=[],skip=0;
+ d.forEach(function(x,i){if(x[0]!==" ")for(k=Math.max(0,i-2);k<=Math.min(d.length-1,i+2);k++)show[k]=true;});
+ if(!show.some(Boolean))return '<div class="muted">与当前内容完全相同。</div>';
+ d.forEach(function(x,i){if(!show[i]){skip++;return;}if(skip){o.push('<span class="dskip">… '+skip+" 行相同 …</span>");skip=0;}
+  o.push('<span class="d'+(x[0]==="+"?"add":x[0]==="-"?"del":"")+'">'+(x[0]===" "?"  ":x[0]+" ")+esc(x[1])+"</span>");});
+ if(skip)o.push('<span class="dskip">… '+skip+" 行相同 …</span>");
+ return '<pre class="preview diff">'+o.join("\n")+"</pre>";}
+function pageCfgFile(P,d,cur){
+ P.innerHTML=cfgHead(d)+
+  '<div class="cfgbar"><span id="cstat" class="cstat"></span><span id="cdirty"></span><span class="sp"></span>'+
+  '<span class="hwrap"><button class="btn" id="chist"></button><div class="hpop panel" id="hpop" hidden></div></span>'+
+  '<button class="btn primary" id="csave" disabled title="Ctrl+S">保存</button></div>'+
+  '<div class="editor" id="edbox"><pre class="gut" id="gut"></pre><textarea id="ced" spellcheck="false" wrap="off"></textarea></div><div id="cres"></div><div id="hprev"></div></div>';
+ cfgTabs(d.files,cur.key);
+ var ed=$("#ced"),gut=$("#gut"),errLine=null,vt=null,vseq=0,state="clean";
+ cur.text=cur.text.replace(/\r\n?/g,"\n");    /* a textarea always uses \n: compare (and save) like that */
+ ed.value=cur.text;
+ var STAGE={syntax:"TOML 语法错误",config:"配置校验失败",conflict:"保存冲突"};
+ function status(html){$("#cstat").innerHTML=html;}
+ function idle(){status('<span class="muted mono">'+esc(cur.path)+"</span>");}
+ function setDirty(v){S.dirty=v;$("#cdirty").innerHTML=v?'<span class="dirty">● 未保存</span> <button type="button" class="linkbtn" id="cundo">撤销</button>':"";
+  if(v)$("#cundo").onclick=function(){ed.value=cur.text;ed.oninput();};
+  $("#csave").disabled=!v||state==="bad"||d.busy;}
+ function gutter(){var n=ed.value.split("\n").length,o=[];for(var i=1;i<=n;i++)o.push(i===errLine?"<b>"+i+"</b>":String(i));gut.innerHTML=o.join("\n")+"\n";gut.scrollTop=ed.scrollTop;
+  $("#edbox").style.height=Math.min(Math.max(n+1,12)*18+18,Math.round(window.innerHeight*0.72))+"px";}
+ function show(r,saved){errLine=r.syntax&&r.syntax.line||null;gutter();
+  var warn=r.warnings&&r.warnings.length?'<div class="msg warn"><b>警告</b>'+errList(r.warnings)+"</div>":"";
+  if(r.ok){state="ok";status('<span class="okc">✓ '+(saved?"已保存":"校验通过")+"</span>"+(saved&&r.backup?'<span class="muted"> · 旧版本已备份</span>':"")+
+    (r.summary?'<span class="muted"> · '+esc(r.summary.season)+" "+esc(r.summary.start)+" ~ "+esc(r.summary.end)+" · 生效 "+esc(r.summary.effective_time)+" UTC</span>":""));$("#cres").innerHTML=warn;}
+  else{state="bad";status('<span class="errc">✗ '+(STAGE[r.stage]||"失败")+(r.syntax&&r.syntax.line?"（第 "+r.syntax.line+" 行）":"")+"</span>");
+   $("#cres").innerHTML='<div class="msg err">'+errList(r.errors)+(saved===false?"文件未改动。":"")+"</div>";}
+  setDirty(S.dirty);}
+ function validate(){var my=++vseq,text=ed.value;
+  api("POST","api/config/validate",{season:S.season,key:cur.key,text:text}).then(function(r){if(my===vseq)show(r);})
+   .catch(function(e){if(my!==vseq)return;if(e.data&&e.data.stage)show(e.data);else{state="ok";status('<span class="muted">无法校验：'+esc(e.message)+"</span>");}});}
+ ed.oninput=function(){var dirty=ed.value!==cur.text;clearTimeout(vt);vseq++;
+  if(!dirty){state="clean";errLine=null;idle();$("#cres").innerHTML="";}
+  else{state="checking";status('<span class="muted"><span class="spinner"></span>校验中…</span>');vt=setTimeout(validate,700);}
+  setDirty(dirty);gutter();};
+ ed.onscroll=function(){gut.scrollTop=ed.scrollTop;};
+ ed.onkeydown=function(e){if(e.key==="Tab"){e.preventDefault();var s=ed.selectionStart;ed.setRangeText("    ",s,ed.selectionEnd,"end");ed.oninput();}
+  else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();save();}};
+ function save(){if(!S.dirty||state==="bad")return;if(d.busy){toast("有任务正在运行，暂时不能保存",true);return;}
+  clearTimeout(vt);vseq++;$("#csave").disabled=true;var text=ed.value;
+  api("POST","api/config/save",{season:S.season,key:cur.key,text:text,mtime_ns:cur.mtime_ns}).then(function(r){
+   cur.text=text;cur.mtime_ns=r.mtime_ns;S.dirty=false;show(r,true);setDirty(ed.value!==cur.text);toast("已保存");loadHist();})
+  .catch(function(e){if(e.data&&e.data.stage)show(e.data,false);else{$("#cres").innerHTML='<div class="msg err">'+esc(e.message)+"</div>";setDirty(true);}});}
+ $("#csave").onclick=save;
+ /* history: drop-down list, diff against the editor, restore */
+ var hb=$("#chist"),hp=$("#hpop");
+ function drawHist(){var H=cur.history||[];hb.textContent="历史 ("+H.length+")";hb.hidden=!H.length;
+  hp.innerHTML='<div class="muted" style="margin-bottom:4px">每次保存前自动备份；对比 = 历史版本 → 编辑器当前内容</div><ul class="flist">'+H.map(function(v){
+   return '<li><span><span class="mono">'+esc(v.version)+'</span> <span class="n">'+fmtTime(v.mtime,false)+'</span></span><span><button class="btn sm" data-pv="'+esc(v.version)+'">对比</button> <button class="btn sm" data-rs="'+esc(v.version)+'">恢复</button></span></li>';}).join("")+"</ul>";
+  $$("[data-pv]",hp).forEach(function(b){b.onclick=function(){var ver=b.getAttribute("data-pv");hp.hidden=true;
+   api("GET","api/config/history?"+sq({key:cur.key,version:ver})).then(function(r){
+    $("#hprev").innerHTML='<div class="panel"><div class="row"><b>'+esc(r.version)+' → 当前内容</b><span class="sp"></span><button class="btn sm" id="hclose">关闭</button></div>'+diffHtml(r.text,ed.value)+"</div>";
+    $("#hclose").onclick=function(){$("#hprev").innerHTML="";};$("#hprev").scrollIntoView({block:"nearest"});}).catch(function(e){toast(e.message,true);});};});
+  $$("[data-rs]",hp).forEach(function(b){b.onclick=function(){var ver=b.getAttribute("data-rs");if(!confirm("用历史版本 "+ver+" 替换当前文件？（当前文件会先备份，恢复同样需要通过校验）"+(S.dirty?"\n编辑器里未保存的修改会丢失。":"")))return;
+   hp.hidden=true;api("POST","api/config/restore",{season:S.season,key:cur.key,version:ver,mtime_ns:cur.mtime_ns}).then(function(){S.dirty=false;toast("已恢复 "+ver);route(true);})
+    .catch(function(e){if(e.data&&e.data.stage)show(e.data,false);else toast(e.message,true);});};});}
+ function loadHist(){api("GET","api/config?"+sq()).then(function(dd){var f=dd.files.filter(function(x){return x.key===cur.key;})[0];cur.history=f.history;drawHist();});}
+ hb.onclick=function(ev){ev.stopPropagation();hp.hidden=!hp.hidden;};
+ hp.onclick=function(ev){ev.stopPropagation();};
+ $("#cfgpage").onclick=function(){hp.hidden=true;};
+ drawHist();idle();gutter();setDirty(false);
 }
 
 /* ---------- help ---------- */
@@ -373,7 +609,7 @@ function pageHelp(P){
   '<div class="panel"><h2 style="margin-top:0">FlightOpsDesk 导入顺序</h2><ol><li><code>01_airports_add_*.csv</code>（如有）</li><li><code>02_routes_retire_*.csv</code>（停用，写 End Date）</li><li><code>02b_routes_retire_deferred_*.csv</code>（暂缓停用，确认后再导）</li><li><code>03_routes_update_*.csv</code></li><li><code>04_routes_create_*.csv</code></li></ol>'+
   '<p><code>CHARTER</code>（临时加班/包机）、<code>POSITIONING</code>（调机/测试）、<code>WATCH_PLAN</code>（计划有但近期未飞）、<code>HOLD</code> 只出现在报告里，不进 CSV。</p>'+
   '<p>生效时间（停用 End Date / 新建 Start Date）默认是"运行当天的次日 00:00 北京时间"（UTC 16:00）。</p></div>'+
-  '<div class="panel"><h2 style="margin-top:0">换季</h2><ol><li><a href="#/data">数据</a> 页"新建航季"（精简模板，只有 [season]）。</li><li>上传本季三份 CAAC <code>（三字码）.xls</code>。</li><li><a href="#/config">配置</a> 页改本航季 <code>season.toml</code> 的 name、日期（可删掉，自动取 FD23/FD24 众数）；工作区、生效时间、Cost Index、阈值等全站设置在 <code>settings.toml</code>，"生效值"页可看每个键的最终值和来源。</li><li>运行 status 检查无报错，再 run。新航季首次抓取约 30–40 分钟。</li></ol></div>'+
+  '<div class="panel"><h2 style="margin-top:0">换季</h2><ol><li><a href="#/data">数据</a> 页"新建航季"（精简模板，只有 [season]）。</li><li>上传本季三份 CAAC <code>（三字码）.xls</code>。</li><li><a href="#/config">配置</a> 页的"设置"表单改本航季名称、日期（留空则自动取 FD23/FD24 众数）；工作区、生效时间、Cost Index、阈值等全站设置也在这个表单里，每项都标明来自默认 / 全站 / 本航季。</li><li>运行 status 检查无报错，再 run。新航季首次抓取约 30–40 分钟。</li></ol></div>'+
   '<div class="panel"><h2 style="margin-top:0">提示</h2><ul><li>任务同一时间只能运行一个；运行中不能保存配置或上传数据。</li><li>中断 fetch 会保存进度，重新运行时已抓的不会重复。</li><li>配置保存前会完整校验，失败时文件保持不变；每次保存前的旧版本可在"历史版本"恢复。</li><li>时间：运行文件夹名与报告中的时刻均为 UTC；页面上的文件时间按浏览器时区显示并标注时区。</li></ul></div></div></div>';
 }
 

@@ -394,6 +394,92 @@ class TestConfigEditing(WebTestCase):
         self.assertEqual(st, 422)
         self.assertTrue(any("cca_narrowbody" in e for e in d["errors"]))
 
+    def form(self, changes, mtimes=None):
+        if mtimes is None:
+            mtimes = {k: self.get_file(k)["mtime_ns"] for k in ("settings", "season")}
+        return self.authed("POST", "/api/config/form", {"season": SEASON, "changes": changes, "mtimes": mtimes})
+
+    def test_form_writes_each_key_to_its_file(self):
+        st, d = self.form([{"section": "season", "key": "name", "value": "表单航季"},
+                           {"section": "fetch", "key": "rate_per_sec", "value": 1.5},
+                           {"section": "thresholds", "key": "plan_attach", "value": [40, 55]}])
+        self.assertEqual(st, 200, d)
+        self.assertEqual(sorted(d["files"]), ["season.toml", "settings.toml"])
+        season = self.path.read_text(encoding="utf-8")
+        self.assertIn('name = "表单航季"', season)
+        self.assertIn("# test season", season)                                     # comments kept
+        site = C.tomllib.loads((self.home / "settings.toml").read_text(encoding="utf-8"))
+        self.assertEqual((site["fetch"]["rate_per_sec"], site["thresholds"]["plan_attach"]), (1.5, [40, 55]))
+        self.assertEqual(len(list((self.sdir / ".config_history").glob("season.*.toml"))), 1)
+        self.assertEqual(len(list((self.home / ".config_history").glob("settings.*.toml"))), 1)
+        # default value / null -> key removed; a season override is edited in season.toml
+        st, d = self.form([{"section": "fetch", "key": "rate_per_sec", "value": 2.0},
+                           {"section": "season", "key": "name", "value": None}])
+        self.assertEqual(st, 200, d)
+        self.assertNotIn("rate_per_sec", (self.home / "settings.toml").read_text(encoding="utf-8"))
+        self.assertNotIn("name =", self.path.read_text(encoding="utf-8"))
+
+    def test_form_season_override_and_errors(self):
+        self.path.write_bytes((SEASON_TOML + "\n[fetch]\nrate_per_sec = 3.0\n").encode("utf-8"))
+        st, d = self.form([{"section": "fetch", "key": "rate_per_sec", "value": 1.0}])
+        self.assertEqual((st, d["files"]), (200, ["season.toml"]))
+        self.assertIn("rate_per_sec = 1.0", self.path.read_text(encoding="utf-8"))
+        st, d = self.form([{"section": "fetch", "key": "rate_per_sec", "value": None}])    # drop the override
+        self.assertNotIn("rate_per_sec", self.path.read_text(encoding="utf-8"))
+        self.assertEqual(self.form([{"section": "fetch", "key": "nope", "value": 1}])[0], 400)
+        st, d = self.form([{"section": "fetch", "key": "rate_per_sec", "value": -1}])
+        self.assertEqual(st, 422)
+        self.assertNotIn("rate_per_sec", (self.home / "settings.toml").read_text(encoding="utf-8"))
+        st, d = self.form([{"section": "fetch", "key": "rate_per_sec", "value": 1}], mtimes={"settings": 1})
+        self.assertEqual((st, d["stage"]), (409, "conflict"))
+
+    def test_fr24_account_is_write_only(self):
+        acct = self.home / "state" / C.FR24_ACCOUNT_FILE
+        session = self.home / "state" / "fr24_session.json"
+        try:
+            with mock.patch.dict(os.environ, {"FR24_USER": "", "FR24_PASSWORD": ""}):
+                st, d = self.authed("GET", "/api/fr24/account")
+                self.assertEqual((st, d["user"], d["has_password"], d["source"]), (200, "", False, None))
+                self.assertEqual(self.authed("POST", "/api/fr24/account", {"user": "a@example.invalid"})[0], 400)
+                session.write_text("{}", encoding="utf-8")
+                st, d = self.authed("POST", "/api/fr24/account", {"user": "a@example.invalid", "password": "pw-1"})
+                self.assertEqual((st, d["user"], d["has_password"], d["source"]), (200, "a@example.invalid", True, "WEB"))
+                self.assertFalse(session.exists())                              # cached login dropped
+                st, d = self.authed("POST", "/api/fr24/account", {"user": "a@example.invalid", "password": ""})
+                self.assertEqual(st, 200)                                       # same user, empty = keep password
+                self.assertEqual(C.read_fr24_account(), ("a@example.invalid", "pw-1"))
+                self.assertEqual(self.authed("POST", "/api/fr24/account", {"user": "b@example.invalid"})[0], 400)
+                st, d = self.authed("GET", "/api/config", query=f"season={SEASON}")
+                self.assertEqual(d["fr24"]["user"], "a@example.invalid")
+                for path in ("/api/fr24/account", "/api/config", "/api/status"):
+                    st, hd, b = self.call("GET", path, query=f"season={SEASON}", cookie=self._auth[0])
+                    self.assertNotIn(b"pw-1", b)
+                st, d = self.authed("POST", "/api/fr24/account", {"clear": True})
+                self.assertEqual((d["user"], d["source"]), ("", None))
+                self.assertFalse(acct.exists())
+                self.assertEqual(self.call("POST", "/api/fr24/account", {"clear": True})[0], 401)
+        finally:
+            acct.unlink(missing_ok=True)
+
+    def test_set_toml_key(self):
+        t = ('# head\n[a]\nx    = 1   # keep\nlong = [\n  1,\n  2,\n]\nd.p = 1\nd.q = 2\n\n[b]\ny = "s"\n')
+        out = C.set_toml_key(t, "a", "x", 5)
+        self.assertIn("x    = 5   # keep\n", out)
+        out = C.set_toml_key(out, "a", "long", [3])
+        self.assertIn("long = [3]\n", out)
+        out = C.set_toml_key(out, "a", "d", {"p": 9})
+        out = C.set_toml_key(out, "b", "y", delete=True)
+        out = C.set_toml_key(out, "c", "z", True)
+        self.assertEqual(C.tomllib.loads(out), {"a": {"x": 5, "long": [3], "d": {"p": 9}}, "c": {"z": True}})
+        self.assertNotIn("[b]", out)                                                # emptied table removed
+        self.assertTrue(out.startswith("# head\n"))
+        kept = C.set_toml_key("[a]\n# note\nx = 1\n", "a", "x", delete=True)         # ...unless it has comments
+        self.assertEqual(kept, "[a]\n# note\n")
+        self.assertEqual(C.set_toml_key("[a]\nx = 1\n\n[b]\ny = 2\n", "b", "y", delete=True), "[a]\nx = 1\n")
+        self.assertIn("\r\n", C.set_toml_key("[a]\r\nx = 1\r\n", "a", "x", 2))
+        with self.assertRaises(ValueError):
+            C.set_toml_key("[a.d]\np = 1\n", "a", "d", {"p": 2})
+
     def test_save_refused_while_job_running(self):
         f = self.get_file()
         with mock.patch.object(self.app.jobs, "current", return_value={"id": "x", "cmd": "fetch"}):

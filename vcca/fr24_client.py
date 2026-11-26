@@ -7,7 +7,7 @@ Ported from the former standalone scripts (removed; see git history): fr24_auth.
 fetch_flight_histories.py (flight/list.json by flight or reg, ``parse_item`` row shape), fetch_airports.py (airport
 boards, ``extract_row``), fetch_search_index.py (search index).
 
-Credentials: environment variables FR24_USER / FR24_PASSWORD only (``config.fr24_credentials``). Session cache:
+Credentials: ``config.fr24_credentials`` (account saved on the web config page, else FR24_USER / FR24_PASSWORD). Session cache:
 ``$VCCA_HOME/state/fr24_session.json`` (``default_session_cache_path()``), 6 hours.
 
 Normalised row shape (``FlightRow``; identical keys to legacy flight_histories.json rows, consumed by fr24_store):
@@ -272,7 +272,8 @@ class FR24Client:
                 return
         user, password = fr24_credentials()
         if not user or not password:
-            raise FR24AuthError("环境变量 FR24_USER / FR24_PASSWORD 未设置（服务器上写在 /etc/vcca/vcca.env）")
+            raise FR24AuthError("没有 FR24 账号：在网页「配置 → 设置」里填写，或设置环境变量 FR24_USER / FR24_PASSWORD"
+                                "（服务器上写在 /etc/vcca/vcca.env）")
         try:
             self._api.login(user, password)
         except Exception as e:  # noqa: BLE001 - LoginError / HTTP errors
@@ -467,5 +468,5 @@ class FR24Client:
 
 
 def credentials_available(cfg: "Config | None" = None) -> bool:
-    """True when FR24_USER and FR24_PASSWORD are set (never returns/prints the values)."""
+    """True when an FR24 account is configured (web page or environment; never returns/prints the values)."""
     return fr24_credentials() != (None, None)

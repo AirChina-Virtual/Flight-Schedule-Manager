@@ -106,8 +106,9 @@ sudo vcca test                     # 测试（随代码的样本数据 tests/fix
 sudo vcca test --full              # 加上对 /srv/vcca 真实数据的全量验收（只读，不改数据）
 ```
 
-修改 FR24 账号：`sudo nano /etc/vcca/vcca.env`（格式 `FR24_PASSWORD='...'`，值里不能有单引号），
-然后 `sudo systemctl restart vcca-web`。
+修改 FR24 账号：最简单是在网页「配置 → 设置 → FR24 账户」里填写，立即生效（保存在
+`/srv/vcca/state/fr24_account.json`，权限 0600，优先于 `vcca.env`）。也可以 `sudo nano /etc/vcca/vcca.env`
+（格式 `FR24_PASSWORD='...'`，值里不能有单引号），然后 `sudo systemctl restart vcca-web`；网页里填过账号时以网页的为准。
 
 ## 6. 更新
 

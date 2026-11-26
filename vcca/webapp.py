@@ -21,6 +21,9 @@ Routes (all JSON unless noted; everything except /, /static/*, /api/login needs 
   GET  /api/config?season=     (files settings|season|airport_grades|fleets + "effective": every key with its source)
   GET  /api/config/history?season=&key=&version=
   POST /api/config/validate|save|restore {season, key, text|version, mtime_ns}
+  POST /api/config/form {season, changes: [{section, key, value|null}], mtimes: {settings, season}}
+       (settings form: each key is written to the file it currently comes from; null / fallback value = remove)
+  GET  /api/fr24/account       POST /api/fr24/account {user, password | clear: true}   (password is never returned)
   GET  /api/data?season=       POST /api/upload/vamsys (raw body)    POST /api/vamsys/workspace {season, workspace_id}
   POST /api/upload/plan?season=&add=1 (raw body, X-Filename)      POST /api/upload/fr24cache (raw body)
 """
@@ -376,6 +379,9 @@ class App:
             ("POST", re.compile(r"/api/config/validate"), self.h_config_validate, True),
             ("POST", re.compile(r"/api/config/save"), self.h_config_save, True),
             ("POST", re.compile(r"/api/config/restore"), self.h_config_restore, True),
+            ("POST", re.compile(r"/api/config/form"), self.h_config_form, True),
+            ("GET", re.compile(r"/api/fr24/account"), self.h_fr24_account, True),
+            ("POST", re.compile(r"/api/fr24/account"), self.h_fr24_account_save, True),
             ("GET", re.compile(r"/api/data"), self.h_data, True),
             ("POST", re.compile(r"/api/upload/vamsys"), self.h_upload_vamsys, True),
             ("POST", re.compile(r"/api/upload/plan"), self.h_upload_plan, True),
@@ -858,7 +864,7 @@ class App:
         except C.ConfigError as e:
             effective = {"rows": [], "warnings": list(e.errors)}
         return json_response({"season": sdir.name, "files": files, "effective": effective,
-                              "busy": self.jobs.current() is not None})
+                              "fr24": self._fr24_account_info(), "busy": self.jobs.current() is not None})
 
     def h_config_history(self, req: Request) -> Response:
         sdir = self._season_dir(req.query.get("season"))
@@ -872,18 +878,23 @@ class App:
         return json_response({"version": version, "text": p.read_bytes().decode("utf-8", errors="replace")})
 
     def _validate(self, sdir: Path | None, path: Path, text: str) -> tuple[int, dict]:
-        """Full validation of ``text`` as the content of ``path`` without touching the file. Without a season
+        return self._validate_many(sdir, {path: text})
+
+    def _validate_many(self, sdir: Path | None, texts: dict[Path, str]) -> tuple[int, dict]:
+        """Full validation of ``texts`` ({path: unsaved content}) without touching the files. Without a season
         (settings.toml on a fresh server) only the TOML syntax and the known sections/keys are checked."""
-        try:
-            tomllib.loads(text)
-        except tomllib.TOMLDecodeError as e:
-            return 400, {"ok": False, "stage": "syntax", "syntax": _toml_error(e), "errors": [str(e)]}
+        for path, text in texts.items():
+            try:
+                tomllib.loads(text)
+            except tomllib.TOMLDecodeError as e:
+                return 400, {"ok": False, "stage": "syntax", "syntax": _toml_error(e), "file": path.name,
+                             "errors": [f"{path.name}: {e}" if len(texts) > 1 else str(e)]}
         if sdir is None:
-            with C.text_overrides({path: text}):
+            with C.text_overrides(texts):
                 eff = C.effective_values(None)
             return 200, {"ok": True, "warnings": eff["warnings"], "summary": None}
         try:
-            with C.text_overrides({path: text}):
+            with C.text_overrides(texts):
                 cfg = C.load_config(sdir, strict=False)
         except C.ConfigError as e:
             return 422, {"ok": False, "stage": "config", "errors": list(e.errors)}
@@ -901,42 +912,151 @@ class App:
         return json_response(res, status)
 
     def _save_config(self, sdir: Path | None, key: str, text: str, mtime_ns: Any) -> tuple[int, dict]:
+        status, res = self._save_many(sdir, {key: (text, mtime_ns)})
+        if res.get("ok"):
+            res.update(backup=res["backups"].get(key), mtime_ns=res["mtimes"][key])
+        elif "mtimes" in res:
+            res["mtime_ns"] = res["mtimes"].get(key)
+        return status, res
+
+    def _save_many(self, sdir: Path | None, items: dict[str, tuple[str, Any]]) -> tuple[int, dict]:
+        """Validate and write several config files together ({key: (text, mtime_ns seen by the client)}): conflict
+        check -> validation of all new texts at once -> backup + atomic write of each -> re-check from disk (all
+        files restored when it fails)."""
         self._require_idle()
-        path, hist = self._config_paths(sdir, key)
+        paths = {k: self._config_paths(sdir, k) for k in items}
         with self._write_lock:
-            try:
-                cur_mtime = path.stat().st_mtime_ns
-            except OSError:
-                cur_mtime = None
-            if mtime_ns != cur_mtime:
-                return 409, {"ok": False, "stage": "conflict",
-                             "errors": ["文件在你打开之后被修改过（其他人或其他程序），请重新加载后再改"],
-                             "mtime_ns": cur_mtime}
-            status, res = self._validate(sdir, path, text)
+            cur = {}
+            for k, (path, _) in paths.items():
+                try:
+                    cur[k] = path.stat().st_mtime_ns
+                except OSError:
+                    cur[k] = None
+            if any(items[k][1] != cur[k] for k in items):
+                return 409, {"ok": False, "stage": "conflict", "mtimes": cur,
+                             "errors": ["文件在你打开之后被修改过（其他人或其他程序），请重新加载后再改"]}
+            status, res = self._validate_many(sdir, {paths[k][0]: items[k][0] for k in items})
             if not res["ok"]:
                 return status, res
-            hist.mkdir(parents=True, exist_ok=True)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            backup = None
-            if path.is_file():
-                backup = _new_backup_path(hist, path.stem, ".toml")
-                shutil.copy2(path, backup)
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_bytes(text.encode("utf-8"))
-            os.replace(tmp, path)
-            try:                                    # re-check from disk; restore the old file if it fails
+            written: list[tuple[Path, Path | None]] = []
+            backups: dict[str, str | None] = {}
+            for k, (text, _) in items.items():
+                path, hist = paths[k]
+                hist.mkdir(parents=True, exist_ok=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                backup = None
+                if path.is_file():
+                    backup = _new_backup_path(hist, path.stem, ".toml")
+                    shutil.copy2(path, backup)
+                tmp = path.with_name(path.name + ".tmp")
+                tmp.write_bytes(text.encode("utf-8"))
+                os.replace(tmp, path)
+                written.append((path, backup))
+                backups[k] = backup.name if backup else None
+            try:                                    # re-check from disk; restore the old files if it fails
                 if sdir is not None:
                     C.load_config(sdir, strict=False)
             except Exception as e:  # noqa: BLE001
-                if backup:
-                    shutil.copy2(backup, path)
-                else:
-                    path.unlink(missing_ok=True)
+                for path, backup in written:
+                    if backup:
+                        shutil.copy2(backup, path)
+                    else:
+                        path.unlink(missing_ok=True)
                 return 422, {"ok": False, "stage": "config", "errors": [f"保存后校验失败，已还原: {e}"]}
             with self._lock:
                 self._status_cache.clear()
-            res.update(saved=True, backup=backup.name if backup else None, mtime_ns=path.stat().st_mtime_ns)
+            res.update(saved=True, backups=backups,
+                       mtimes={k: paths[k][0].stat().st_mtime_ns for k in items})
             return 200, res
+
+    @staticmethod
+    def _fr24_account_info() -> dict:
+        """Account shown on the config page: the web-saved user name and whether a password is stored (never the
+        password), plus whether the environment variables are set and which source fetch will use."""
+        user, pw = C.read_fr24_account()
+        st = C.credential_status()
+        env = st["checked"][1]
+        return {"user": user, "has_password": bool(pw), "source": st["source"],
+                "env": {"user": env[1], "password": env[2]}}
+
+    def h_fr24_account(self, req: Request) -> Response:  # noqa: ARG002
+        return json_response(self._fr24_account_info())
+
+    def h_fr24_account_save(self, req: Request) -> Response:
+        """Save (or with ``clear`` remove) the FR24 account. An empty password keeps the stored one when the user
+        name is unchanged. The cached FR24 session is dropped so the next fetch logs in with the new account."""
+        self._require_idle()
+        d = req.json()
+        with self._write_lock:
+            if d.get("clear"):
+                C.clear_fr24_account()
+            else:
+                user = str(d.get("user") or "").strip()
+                pw = str(d.get("password") or "")
+                if not user or len(user) > 200 or any(c in user for c in "\r\n\t"):
+                    raise HTTPError(400, "请填写 FR24 账号（邮箱）")
+                if len(pw) > 200 or any(c in pw for c in "\r\n"):
+                    raise HTTPError(400, "密码格式不对")
+                old_user, old_pw = C.read_fr24_account()
+                if not pw:
+                    if user != old_user or not old_pw:
+                        raise HTTPError(400, "请填写密码")
+                    pw = old_pw
+                C.save_fr24_account(user, pw)
+                del pw, old_pw
+            from .fr24_client import SESSION_CACHE_FILE
+            (C.state_dir() / SESSION_CACHE_FILE).unlink(missing_ok=True)
+            with self._lock:
+                self._status_cache.clear()
+        return json_response(self._fr24_account_info())
+
+    def h_config_form(self, req: Request) -> Response:
+        """Settings form: write changed keys into the file each one currently comes from ([season] and keys that
+        season.toml overrides -> season.toml, everything else -> settings.toml). ``value`` null, or equal to what the
+        key would fall back to (site value / code default), removes the key from that file."""
+        d = req.json()
+        sdir = self._season_dir(d.get("season"))
+        changes = d.get("changes")
+        if not isinstance(changes, list) or not changes:
+            raise HTTPError(400, "没有修改")
+        defaults = C.default_values()
+        lay = C.layout()
+        files = {"settings": lay.settings, "season": sdir / C.SEASON_FILE}
+        texts: dict[str, str] = {}
+        for k, p in files.items():
+            try:
+                texts[k] = p.read_bytes().decode("utf-8")
+            except OSError:
+                texts[k] = ""
+        try:
+            raw = {k: tomllib.loads(t) for k, t in texts.items()}
+        except tomllib.TOMLDecodeError as e:
+            raise HTTPError(409, f"配置文件有语法错误，请先在 TOML 编辑器里修好：{e}") from None
+        new = dict(texts)
+        for ch in changes:
+            sect, key = str(ch.get("section", "")), str(ch.get("key", ""))
+            if sect not in defaults or key not in defaults[sect]:
+                raise HTTPError(400, f"未知配置项 [{sect}] {key}")
+            in_season = isinstance(raw["season"].get(sect), dict) and key in raw["season"][sect]
+            target = "season" if sect == C.SEASON_SECTION or in_season else "settings"
+            site = raw["settings"].get(sect) if isinstance(raw["settings"].get(sect), dict) else {}
+            fallback = site.get(key, defaults[sect][key]) if target == "season" and sect != C.SEASON_SECTION \
+                else defaults[sect][key]
+            value = ch.get("value")
+            try:
+                if value is None or C._same(value, fallback):
+                    new[target] = C.set_toml_key(new[target], sect, key, delete=True)
+                else:
+                    new[target] = C.set_toml_key(new[target], sect, key, value)
+            except (ValueError, TypeError) as e:
+                raise HTTPError(400, str(e)) from None
+        mtimes = d.get("mtimes") or {}
+        items = {k: (new[k], mtimes.get(k)) for k in files if new[k] != texts[k]}
+        if not items:
+            return json_response({"ok": True, "saved": False, "files": []})
+        status, res = self._save_many(sdir, items)
+        res["files"] = [files[k].name for k in items]
+        return json_response(res, status)
 
     def h_config_save(self, req: Request) -> Response:
         d = req.json()

@@ -186,6 +186,23 @@ class ConfigTest(unittest.TestCase):
             self.assertIsNone(C.credential_status()["source"])
             self.assertEqual(C.fr24_credentials(), (None, None))
 
+    def test_web_account_file_wins_over_environment(self):
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(C, "fr24_account_path", return_value=Path(td) / C.FR24_ACCOUNT_FILE), \
+                mock.patch.dict(os.environ, {"FR24_USER": "env@example.invalid", "FR24_PASSWORD": "env-pw"}):
+            self.assertEqual(C.read_fr24_account(), ("", ""))
+            p = C.save_fr24_account("web@example.invalid", "web-pw")
+            if os.name == "posix":
+                self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(C.fr24_credentials(), ("web@example.invalid", "web-pw"))
+            st = C.credential_status()
+            self.assertEqual((st["source"], [c[1:] for c in st["checked"]]), ("WEB", [(True, True), (True, True)]))
+            self.assertNotIn("web-pw", json.dumps(st))
+            self.assertTrue(C.clear_fr24_account())
+            self.assertFalse(C.clear_fr24_account())
+            self.assertEqual(C.fr24_credentials(), ("env@example.invalid", "env-pw"))
+            self.assertEqual(C.credential_status()["source"], "ENV")
+
 
 class ModelsTest(unittest.TestCase):
     def test_every_reason_code_has_text(self):

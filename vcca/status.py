@@ -189,8 +189,8 @@ def print_status(d: dict[str, Any], print=print) -> int:  # noqa: A002 - injecta
     for x in cr["checked"]:
         hu, hp = x["user"], x["password"]
         mark = "OK " if (hu and hp) else ("-  " if not (hu or hp) else "!! ")
-        print(f"{mark}{x['path']}: FR24_USER {'有' if hu else '无'}, FR24_PASSWORD {'有' if hp else '无'}")
-    print(f"将使用      {cr['source'] or '（未找到账号，fetch 无法登录）'}")
+        print(f"{mark}{x['path']}: 账号 {'有' if hu else '无'}, 密码 {'有' if hp else '无'}")
+    print(f"将使用      {({'WEB': '网页填写的账号', 'ENV': '环境变量'}).get(cr['source'], '（未找到账号，fetch 无法登录）')}")
 
     print("\n=== FR24 缓存 ===")
     ca = d["cache"]

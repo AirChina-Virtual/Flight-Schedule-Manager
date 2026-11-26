@@ -678,6 +678,7 @@ def effective_values(season: str | Path | None = None, *, home: str | Path | Non
     site_raw = _read_toml_optional(lay.settings)
     season_raw = _read_toml_optional(sdir / SEASON_FILE) if sdir else {}
     data, sources = _layers(site_raw, season_raw, warns)
+    site_only = _clean_layer(site_raw, SETTINGS_FILE, allow_season=False, warns=[])
     defaults = default_values()
     rows = []
     for sect, dflt in defaults.items():
@@ -686,7 +687,8 @@ def effective_values(season: str | Path | None = None, *, home: str | Path | Non
         for k, dv in dflt.items():
             v = _plain(data[sect].get(k, dv))
             src = sources.get(f"{sect}.{k}", "default")
-            rows.append({"section": sect, "key": k, "value": v, "default": dv, "source": src,
+            fb = _plain(site_only.get(sect, {}).get(k, dv)) if src == "season" else dv   # value once removed
+            rows.append({"section": sect, "key": k, "value": v, "default": dv, "fallback": fb, "source": src,
                          "source_label": SOURCE_LABELS[src], "changed": not _same(v, dv)})
     return {"rows": rows, "warnings": warns, "settings_file": str(lay.settings),
             "season_file": str(sdir / SEASON_FILE) if sdir else None, "season": sdir.name if sdir else None}
@@ -984,6 +986,117 @@ def dump_toml(sections: Mapping[str, Mapping[str, Any]], header: str = "") -> st
     return "".join(out)
 
 
+_HEADER_RE = re.compile(r"^\s*\[\s*([^\[\]#]+?)\s*\]\s*(#.*)?$")      # [table] (not [[array]])
+
+
+def _toml_entries(lines: list[str], start: int) -> tuple[list[tuple[str, int, int]], int]:
+    """Key/value entries of one table body: ``[(top-level key, first line, last line)]`` and the index of the next
+    table header (or ``len(lines)``). Multi-line values are found by parsing growing line ranges."""
+    out, i, n = [], start, len(lines)
+    while i < n:
+        s = lines[i].strip()
+        if not s or s.startswith("#"):
+            i += 1
+            continue
+        if s.startswith("["):
+            return out, i
+        for j in range(i, n):
+            try:
+                kv = tomllib.loads("".join(lines[i:j + 1]))
+            except tomllib.TOMLDecodeError:
+                continue
+            if kv:
+                out.append((next(iter(kv)), i, j))
+                i = j + 1
+                break
+        else:
+            raise ValueError(f"第 {i + 1} 行无法解析")
+    return out, n
+
+
+def _toml_tables(lines: list[str]) -> list[tuple[str | None, int, list[tuple[str, int, int]], int]]:
+    """``[(table name, header line, entries, end)]``; the root body has name None / header -1 (so do [[arrays]])."""
+    ents, i = _toml_entries(lines, 0)
+    out: list[tuple[str | None, int, list[tuple[str, int, int]], int]] = [(None, -1, ents, i)]
+    while i < len(lines):
+        m = _HEADER_RE.match(lines[i].rstrip("\r\n"))
+        ents, j = _toml_entries(lines, i + 1)
+        out.append((m.group(1).strip().strip('"') if m else None, i, ents, j))
+        i = j
+    return out
+
+
+def _keep_comment(line: str) -> str:
+    """Trailing ``# comment`` of a single-line ``key = value`` (with its leading spaces), or ''."""
+    body = line.rstrip("\r\n")
+    for pos in (p for p, ch in enumerate(body) if ch == "#"):
+        try:
+            tomllib.loads(body[:pos])
+        except tomllib.TOMLDecodeError:
+            continue
+        head = body[:pos].rstrip()
+        return body[len(head):]
+    return ""
+
+
+def set_toml_key(text: str, section: str, key: str, value: Any = None, *, delete: bool = False) -> str:
+    """Set (or with ``delete`` remove) ``key`` in ``[section]`` of TOML ``text``, keeping comments, other keys and
+    line endings. A missing table is appended. Dotted keys (``key.x = ..``) of the same top-level key are replaced
+    as a whole. Raises ValueError when the result would not read back as intended (e.g. a ``[section.key]`` table)."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    before = tomllib.loads(text)
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        lines[-1] += nl
+    new_line = f"{_toml_key(key)} = {toml_value(value)}" if not delete else None
+    tbl = next((t for t in _toml_tables(lines) if t[0] == section), None)
+    if tbl is None:
+        if not delete:
+            if lines and lines[-1].strip():
+                lines.append(nl)
+            lines += [f"[{section}]{nl}", new_line + nl]
+    else:
+        _, hdr, entries, end = tbl
+        mine = [(a, b) for k, a, b in entries if k == key]
+        if delete and mine and hdr >= 0 and len(mine) == len(entries):     # table becomes empty
+            gone = {i for a, b in mine for i in range(a, b + 1)}
+            if all(not lines[i].strip() for i in range(hdr + 1, end) if i not in gone):     # no comments left
+                del lines[hdr:end]
+                while hdr >= len(lines) and lines and not lines[-1].strip():          # no blank tail at EOF
+                    lines.pop()
+                    hdr -= 1
+                mine = []
+        if mine:
+            first_a, first_b = mine[0]
+            keep = _keep_comment(lines[first_a]) if first_a == first_b else ""
+            m = re.match(r"\s*(?:\"[^\"]*\"|[A-Za-z0-9_-]+)\s*=\s*", lines[first_a])   # keep the key's alignment
+            if new_line and m and len(mine) == 1:
+                new_line = m.group(0) + toml_value(value)
+            for a, b in reversed(mine):
+                del lines[a:b + 1]
+            if not delete:
+                lines.insert(first_a, new_line + keep + nl)
+        elif not delete:
+            last = entries[-1][2] if entries else hdr
+            lines.insert(last + 1, new_line + nl)
+    out = "".join(lines)
+    try:
+        after = tomllib.loads(out)                 # read back: only this one key may differ
+    except tomllib.TOMLDecodeError:
+        after = None
+    want = {s: dict(v) if isinstance(v, dict) else v for s, v in before.items()}
+    if delete:
+        if isinstance(want.get(section), dict):
+            want[section].pop(key, None)
+            if not want[section] and after is not None and section not in after:   # emptied table removed
+                del want[section]
+    else:
+        want.setdefault(section, {})[key] = value
+    if not _same(after, want):
+        raise ValueError(f"[{section}] {key} 的写法较特殊（例如单独的 [{section}.{key}] 表），请在 TOML 编辑器里修改")
+    return out
+
+
 @dataclass
 class Migration:
     season_name: str
@@ -1055,21 +1168,66 @@ def ensure_flightradarapi_on_path() -> Path:
 
 
 CREDENTIAL_VARS = ("FR24_USER", "FR24_PASSWORD")
+FR24_ACCOUNT_FILE = "fr24_account.json"     # $VCCA_HOME/state/, written by the web config page (mode 0600)
+ENV_CREDENTIAL_LABEL = "环境变量 FR24_USER / FR24_PASSWORD"
+WEB_CREDENTIAL_LABEL = "网页填写（state/fr24_account.json）"
+
+
+def fr24_account_path() -> Path:
+    return state_dir() / FR24_ACCOUNT_FILE
+
+
+def read_fr24_account() -> tuple[str, str]:
+    """(user, password) saved from the web config page, ('', '') when there is none. Never log the values."""
+    try:
+        d = json.loads(fr24_account_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, ConfigError):
+        return "", ""
+    if not isinstance(d, dict):
+        return "", ""
+    return str(d.get("user") or ""), str(d.get("password") or "")
+
+
+def save_fr24_account(user: str, password: str) -> Path:
+    """Write the web account file atomically, readable by the service user only (0600)."""
+    path = fr24_account_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    data = json.dumps({"user": user, "password": password,
+                       "saved": _dt.datetime.now(ut.UTC).strftime("%Y-%m-%d %H:%M UTC")}, ensure_ascii=False)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(data)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return path
+
+
+def clear_fr24_account() -> bool:
+    try:
+        fr24_account_path().unlink()
+        return True
+    except (FileNotFoundError, ConfigError):
+        return False
 
 
 def fr24_credentials() -> tuple[str | None, str | None]:
-    """(user, password) from the environment variables FR24_USER / FR24_PASSWORD (on the server: systemd
-    EnvironmentFile /etc/vcca/vcca.env). No .env file search. Callers must never log the values."""
+    """(user, password): the account saved on the web config page, else the environment variables FR24_USER /
+    FR24_PASSWORD (on the server: systemd EnvironmentFile /etc/vcca/vcca.env). Callers must never log the values."""
+    u, p = read_fr24_account()
+    if u and p:
+        return u, p
     u, p = os.environ.get("FR24_USER", ""), os.environ.get("FR24_PASSWORD", "")
     return (u, p) if u and p else (None, None)
 
 
 def credential_status(cfg: Config | None = None) -> dict[str, Any]:  # noqa: ARG001 - cfg kept for callers
     """Whether FR24 credentials are set — presence only, NEVER values.
-    Returns {'source': 'ENV'|None, 'checked': [('环境变量 FR24_USER / FR24_PASSWORD', has_user, has_password)]}."""
+    Returns {'source': 'WEB'|'ENV'|None, 'checked': [(label, has_user, has_password), ...]} (web file first)."""
+    wu, wp = (bool(x) for x in read_fr24_account())
     hu, hp = bool(os.environ.get("FR24_USER")), bool(os.environ.get("FR24_PASSWORD"))
-    return {"source": "ENV" if hu and hp else None,
-            "checked": [("环境变量 FR24_USER / FR24_PASSWORD", hu, hp)]}
+    return {"source": "WEB" if wu and wp else "ENV" if hu and hp else None,
+            "checked": [(WEB_CREDENTIAL_LABEL, wu, wp), (ENV_CREDENTIAL_LABEL, hu, hp)]}
 
 
 def count_mode(values: Iterable[str]) -> str:
