@@ -87,7 +87,7 @@ update() {
     jobs=$(running_jobs)
     if [[ -n $jobs ]]; then
         echo "有任务正在运行（重启服务会中断它；fetch 已抓的数据不会丢，之后可重新运行续抓）："
-        echo "$jobs" | sed 's/^/  /'
+        sed 's/^/  /' <<< "$jobs"
         if [[ $force -ne 1 ]]; then
             [[ -t 0 ]] || die "非交互环境下拒绝更新；等任务结束或使用 --force"
             local ans

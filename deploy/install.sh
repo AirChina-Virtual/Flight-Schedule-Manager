@@ -216,7 +216,8 @@ step "nginx: $SITE"
 NEW_SITE=0
 if [[ -e $SITE ]]; then
     echo "已存在，未改动（certbot 会修改它；要重新生成请先删除）"
-    grep -Eq "server_name[[:space:]]+([^;]*[[:space:]])?$DOMAIN[[:space:];]" "$SITE" \
+    dom_re=${DOMAIN//./[.]}                  # dots literal in the regex
+    grep -Eq "server_name[[:space:]]+([^;]*[[:space:]])?${dom_re}[[:space:];]" "$SITE" \
         || warn "$SITE 里的 server_name 不是 $DOMAIN"
 else
     sed "s/@DOMAIN@/$DOMAIN/g" "$APP/deploy/nginx-vcca.conf.template" > "$SITE"
