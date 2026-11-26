@@ -518,7 +518,9 @@ class TestUploads(WebTestCase):
             vs = vamsys.load_vamsys(db_path=target, workspace_id=names["vCCA"]["id"], collection=1,
                                     target_ops=("CCA", "CAO", "CCD", "BJN"))
             self.assertEqual(vs.revision, names["vCCA"]["revision"])
-            self.assertGreater(len(vs.routes), 2000)
+            self.assertEqual(len(vs.routes), len(vamsys.load_vamsys(S.cfg()).routes))   # every route survives
+            if S.FULL_DATA:
+                self.assertGreater(len(vs.routes), 2000)
         finally:
             make_vamsys_db(Path(self.tmp.name) / "restore2.db")
             shutil.copy2(Path(self.tmp.name) / "restore2.db", self.home / "vamsys" / "workspaces.db")

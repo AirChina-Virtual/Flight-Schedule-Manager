@@ -6,7 +6,7 @@
     python vcca_plan.py build                compute -> output/<time>/decisions.json
     python vcca_plan.py export [--run NAME]  decisions.json -> xlsx / csv / html / summary
     python vcca_plan.py run [--deep]         fetch + build + export
-    python vcca_plan.py test                 unittest discovery in tests/
+    python vcca_plan.py test [--full]        unittest discovery in tests/ (fixture data; --full: real $VCCA_HOME, read only)
     python vcca_plan.py serve [--port 8770]  development web server on 127.0.0.1 (production: gunicorn)
     python vcca_plan.py web-user set NAME | list | delete NAME      web front end accounts
     python vcca_plan.py migrate-config --from OLD/season.toml [--write]   old season.toml -> settings.toml + season.toml
@@ -136,6 +136,17 @@ def cmd_run(args) -> int:
 
 
 def cmd_test(args) -> int:
+    """Plain: the bundled fixture data (tests/fixtures/home). --full: also the acceptance tests on the real data in
+    $VCCA_HOME, which the tests only read (VCCA_TEST_HOME, see tests/_support.py)."""
+    import os
+
+    if getattr(args, "full", False):
+        home = C.vcca_home()                       # ConfigError when $VCCA_HOME does not exist
+        os.environ["VCCA_TEST_HOME"] = str(home)
+        print(f"测试数据：{home}（只读，含全量数据验收测试）")
+    else:
+        os.environ.pop("VCCA_TEST_HOME", None)
+        print("测试数据：tests/fixtures/home（随代码的样本数据；全量数据验收用 test --full）")
     suite = unittest.defaultTestLoader.discover(str(WORK_DIR / "tests"), pattern="test_*.py",
                                                 top_level_dir=str(WORK_DIR))
     res = unittest.TextTestRunner(verbosity=2 if args.verbose else 1).run(suite)
@@ -272,6 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--deep", action="store_true")
     t = sub.add_parser("test", help="运行规则测试")
     t.add_argument("-v", "--verbose", action="store_true")
+    t.add_argument("--full", action="store_true", help="用 $VCCA_HOME 的真实数据（只读）跑全部测试，含全量验收")
     s = sub.add_parser("serve", help="开发用网页服务器（只监听 127.0.0.1，默认端口 8770）")
     s.add_argument("--port", type=int, default=8770)
     w = sub.add_parser("web-user", help="网页前端账号：set <名字>（创建/改密码）、list、delete <名字>")

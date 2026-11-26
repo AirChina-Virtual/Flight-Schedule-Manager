@@ -58,7 +58,7 @@ python vcca_plan.py fetch      # 增量抓取 FR24（按 P0/P1/P2 有效期）
 python vcca_plan.py build      # 计算 → seasons/<航季>/output/<时间>/decisions.json
 python vcca_plan.py export     # 生成 xlsx / CSV / report.html / summary.json
 python vcca_plan.py run        # fetch + build + export
-python vcca_plan.py test       # 规则与格式测试
+python vcca_plan.py test       # 规则与格式测试（样本数据 tests/fixtures/home；--full：再用 $VCCA_HOME 真实数据只读验收）
 python vcca_plan.py web-user set 名字 | list | delete 名字    # 网页账号
 python vcca_plan.py serve      # 开发用网页服务器，只监听 127.0.0.1（默认端口 8770，--port 改）
 ```
@@ -140,7 +140,8 @@ python vcca_plan.py serve      # 开发用网页服务器，只监听 127.0.0.1�
 ```powershell
 $env:VCCA_HOME = "D:\vcca_dev_home"        # 含 settings.toml、seasons/、vamsys/、rules/、cache/、state/
 python vcca_plan.py status
-python vcca_plan.py test                    # 需要真实数据的测试读 $VCCA_HOME（航季 $VCCA_TEST_SEASON，默认 2026-27-1）
+python vcca_plan.py test                    # 样本数据 tests/fixtures/home（tools/make_fixtures.py 生成），不读 $VCCA_HOME
+python vcca_plan.py test --full             # 全量验收：只读使用 $VCCA_HOME 的真实数据（= VCCA_TEST_HOME，航季 $VCCA_TEST_SEASON，默认 2026-27-1）
 python vcca_plan.py serve                   # http://127.0.0.1:8770/
 ```
 

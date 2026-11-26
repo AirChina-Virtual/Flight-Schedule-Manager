@@ -102,6 +102,8 @@ sudo vcca web-user set <名字>      # 添加账号或改密码（交互输入�
 sudo vcca web-user list
 sudo vcca web-user delete <名字>
 sudo vcca logs                     # = journalctl -u vcca-web -f
+sudo vcca test                     # 测试（随代码的样本数据 tests/fixtures/home）
+sudo vcca test --full              # 加上对 /srv/vcca 真实数据的全量验收（只读，不改数据）
 ```
 
 修改 FR24 账号：`sudo nano /etc/vcca/vcca.env`（格式 `FR24_PASSWORD='...'`，值里不能有单引号），

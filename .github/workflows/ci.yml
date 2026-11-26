@@ -9,8 +9,7 @@ permissions:
 
 jobs:
   tests:
-    # NOTE: this job is EXPECTED to fail for now — several tests read local data (season folders, VAMSYS db,
-    # FR24 cache) that is not in the repository. A later phase adds data fixtures; do not skip the tests here.
+    # Runs on the bundled fixture data (tests/fixtures/home); the @full_data tests skip without VCCA_TEST_HOME.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

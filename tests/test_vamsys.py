@@ -3,7 +3,7 @@
 import unittest
 
 from tests import _support as S
-from vcca import vamsys
+from vcca import caac, vamsys
 
 
 class VamsysLoaderTest(unittest.TestCase):
@@ -17,11 +17,21 @@ class VamsysLoaderTest(unittest.TestCase):
         self.assertEqual(c["fleets"], 37)
         self.assertEqual(c["aircraft"], 586)
         self.assertEqual(c["routings"], 15)
-        # Route counts change whenever FlightOpsDesk syncs; check internal consistency + the known lower bound.
-        self.assertGreater(c["routes"], 2000)
+        # Route counts change whenever FlightOpsDesk syncs; check internal consistency (+ bound / fixture values).
         self.assertEqual(c["routes"], c["commercial_routes"] + c["special_routes"])
         self.assertEqual(sum(c["routes_by_op"].values()), c["routes"])
         self.assertIsNotNone(self.vs.revision)
+        self.assertTrue(c["commercial_routes"] and c["special_routes"])
+
+    @S.full_data
+    def test_real_route_count(self):
+        self.assertGreater(self.vs.counts()["routes"], 2000)
+
+    @S.fixture_only
+    def test_fixture_route_counts(self):
+        self.assertEqual(self.vs.counts(), S.FIXTURE["vamsys"]["counts"])
+        plan_callsigns = {k[1] for k in caac.group_legs(S.plan().legs)}
+        self.assertTrue(plan_callsigns & {r.callsign for r in self.vs.commercial_routes})
 
     def test_route_fields(self):
         r = self.vs.routes[0]

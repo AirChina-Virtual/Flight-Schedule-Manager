@@ -573,20 +573,31 @@ class FreshDataFixesTest(unittest.TestCase):
 
 
 # =====================================================================================================================
-@unittest.skipUnless(os.environ.get("VCCA_TEST_FULL", "1") != "0" and S.cfg().cache_db.is_file(),
-                     "full-data acceptance (set VCCA_TEST_FULL=0 to skip)")
+@unittest.skipUnless(os.environ.get("VCCA_TEST_FULL", "1") != "0", "end-to-end run disabled (VCCA_TEST_FULL=0)")
 class FullDataAcceptanceTest(unittest.TestCase):
-    """Plan 8 acceptance 1-2 on the real season data (fr24_cache.db): closure + idempotency."""
+    """Plan 8 acceptance 1-2 end to end from $VCCA_HOME (plan .xls + workspaces.db + fr24_cache.db): closure on any
+    data (fixture home or VCCA_TEST_HOME); idempotency on the full real season only."""
 
-    def test_closure_and_idempotency(self):
+    @classmethod
+    def setUpClass(cls):
         c = cfg()
-        inp = R.load_inputs(c, log=lambda s: None)
-        res = R.run_reconcile(c, inp, now=X.NOW)
-        self.assertEqual(R.check_closure(res.decisions, inp.vamsys), [])
-        ch, res2 = R.idempotency_check(c, inp, res, now=X.NOW)
+        if not c.cache_db.is_file():
+            raise unittest.SkipTest(f"no {c.cache_db}")
+        cls.inp = R.load_inputs(c, log=lambda s: None)
+        cls.res = R.run_reconcile(c, cls.inp, now=X.NOW)
+
+    def test_closure(self):
+        self.assertEqual(self.inp.source, "store")
+        self.assertEqual(R.check_closure(self.res.decisions, self.inp.vamsys), [])
+        self.assertEqual(sum(1 for d in self.res.decisions if d.category in VROUTE_CATEGORIES),
+                         len(self.inp.vamsys.commercial_routes))
+
+    # On the fixture subset CREATE_FR24 of the unplanned CCA1795/CCA1796 (ZSHC<->ZGGG, rows only via reg: queries)
+    # is not idempotent (2nd run: FLEET_EXTRA), so this check stays on the real season data.
+    @S.full_data
+    def test_idempotency(self):
+        ch, res2 = R.idempotency_check(cfg(), self.inp, self.res, now=X.NOW)
         self.assertEqual(dict(ch), {})
-        self.assertEqual(sum(1 for d in res.decisions if d.category in VROUTE_CATEGORIES),
-                         len(inp.vamsys.commercial_routes))
 
 
 if __name__ == "__main__":
