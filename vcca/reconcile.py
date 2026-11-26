@@ -694,7 +694,7 @@ def reconcile(cfg: "Config", plan: PlanData, groups: Mapping[RouteKey, PlanGroup
                                                 type=g.route_type, dep=g.raw_slots[0].dep, arr=g.raw_slots[0].arr,
                                                 days=g.raw_slots[0].days),
                              evidence=EvidenceSummary.from_evidence(ev))
-                d.add_reason(RC.SINGLE_DAY_IGNORED, why=f"冬季实飞{ev.acts}班<{th.single_day_promote_acts}")
+                d.add_reason(RC.SINGLE_DAY_IGNORED, why=f"本季实飞{ev.acts}班<{th.single_day_promote_acts}")
                 d.details["single_day"] = True
                 R.confidence(d, ev)
                 R.add(d)
@@ -1305,7 +1305,7 @@ def load_inputs(cfg: "Config", log: LogFn = print) -> BuildInputs:
                                search_index=extras.get("search_index"),
                                fetched_numbers=extras.get("fetched_numbers") or ())
     n_season = sum(1 for o in index.obs if o.window == "season")
-    log(f"FR24 观测：{len(index.obs)} 条（冬季 {n_season}，最新实飞 {ut.ts_utc_str(index.latest_ts)}），剔除 {index.dropped}")
+    log(f"FR24 观测：{len(index.obs)} 条（本季 {n_season}，最新实飞 {ut.ts_utc_str(index.latest_ts)}），剔除 {index.dropped}")
     keys = set(groups) | {v.key for v in vam.commercial_routes}
     evidence = build_all_evidence(sorted(keys), index, cfg)
     return BuildInputs(plan=plan, groups=groups, gaps=gaps, vamsys=vam, index=index, evidence=evidence,
