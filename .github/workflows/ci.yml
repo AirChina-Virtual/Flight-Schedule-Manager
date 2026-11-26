@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    # NOTE: this job is EXPECTED to fail for now — several tests read local data (season folders, VAMSYS db,
+    # FR24 cache) that is not in the repository. A later phase adds data fixtures; do not skip the tests here.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  deploy-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck deploy/install.sh deploy/vcca
+
+      - name: bash -n
+        run: bash -n deploy/install.sh && bash -n deploy/vcca
+
+      - name: Install nginx
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q nginx
+
+      - name: nginx -t (rendered template, as install.sh writes it)
+        run: |
+          set -euo pipefail
+          work=$RUNNER_TEMP/nginx
+          mkdir -p "$work"
+          sed 's/@DOMAIN@/vcca.example.com/g' deploy/nginx-vcca.conf.template > "$work/vcca.conf"
+          if grep -n '@DOMAIN@' "$work/vcca.conf"; then exit 1; fi
+          cat > "$work/nginx.conf" <<EOF
+          pid $work/nginx.pid;
+          error_log stderr;
+          events {}
+          http {
+              include /etc/nginx/mime.types;
+              include $work/vcca.conf;
+          }
+          EOF
+          sudo nginx -t -c "$work/nginx.conf"
+
+      - name: nginx -t (after certbot — 443 ssl with a self-signed cert)
+        run: |
+          set -euo pipefail
+          work=$RUNNER_TEMP/nginx
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=vcca.example.com \
+            -keyout "$work/key.pem" -out "$work/cert.pem" 2>/dev/null
+          # Mimic `certbot --nginx --redirect`: the server block moves to 443 ssl, port 80 only redirects.
+          sed -e 's/@DOMAIN@/vcca.example.com/g' \
+              -e "s|^    listen 80;|    listen 443 ssl;\n    ssl_certificate $work/cert.pem;\n    ssl_certificate_key $work/key.pem;|" \
+              -e 's|^    listen \[::\]:80;|    listen [::]:443 ssl;|' \
+              deploy/nginx-vcca.conf.template > "$work/vcca-ssl.conf"
+          cat >> "$work/vcca-ssl.conf" <<'EOF'
+          server {
+              listen 80;
+              server_name vcca.example.com;
+              return 301 https://$host$request_uri;
+          }
+          EOF
+          grep -n 'listen\|ssl_cert' "$work/vcca-ssl.conf"
+          sed "s|$work/vcca.conf|$work/vcca-ssl.conf|" "$work/nginx.conf" > "$work/nginx-ssl.conf"
+          sudo nginx -t -c "$work/nginx-ssl.conf"
+
+      - name: systemd-analyze verify
+        run: |
+          set -euo pipefail
+          # Stub the paths the unit references so verify checks the unit itself, not this runner.
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin vcca
+          sudo install -d /opt/vcca/app /opt/vcca/venv/bin /srv/vcca /etc/vcca
+          printf '#!/bin/sh\nexit 0\n' | sudo tee /opt/vcca/venv/bin/gunicorn >/dev/null
+          sudo chmod 755 /opt/vcca/venv/bin/gunicorn
+          printf "FR24_USER=''\nFR24_PASSWORD=''\n" | sudo tee /etc/vcca/vcca.env >/dev/null
+          systemd-analyze --version | head -1
+          out=$(systemd-analyze verify deploy/vcca-web.service 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          # Fail on any message about our own unit (warnings included).
+          if grep -i 'vcca-web.service' <<<"$out"; then exit 1; fi

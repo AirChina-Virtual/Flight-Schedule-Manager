@@ -1,0 +1,2 @@
+# Local development / CI. CI-only tools (shellcheck, nginx, systemd-analyze) are installed by the workflow.
+-r requirements.txt

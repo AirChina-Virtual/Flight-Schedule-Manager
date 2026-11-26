@@ -1,4 +1,4 @@
-# /etc/systemd/system/vcca-web.service — vCCA web front end (installed by deploy/install.sh)
+# /etc/systemd/system/vcca-web.service — vCCA web front end (installed by deploy/install.sh and `vcca update`)
 [Unit]
 Description=vCCA season plan web front end (gunicorn)
 After=network-online.target
@@ -8,8 +8,12 @@ Wants=network-online.target
 Type=simple
 User=vcca
 Group=vcca
-WorkingDirectory=/opt/vcca/fr24_work
+WorkingDirectory=/opt/vcca/app
+# FR24_USER / FR24_PASSWORD only (root:vcca 0640)
 EnvironmentFile=/etc/vcca/vcca.env
+# VCCA_HOME is the only path setting: settings.toml, seasons/, vamsys/, rules/, cache/, state/ live below it.
+Environment=VCCA_HOME=/srv/vcca
+Environment=VCCA_TRUST_PROXY=1
 Environment=TZ=Asia/Shanghai
 Environment=PYTHONUNBUFFERED=1
 # ONE worker on purpose: the job runner (one fetch/build at a time), its state and the report cache live in this

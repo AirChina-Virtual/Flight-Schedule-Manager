@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# /usr/local/bin/vcca — vCCA command wrapper (installed by deploy/install.sh).
+#
+#   sudo vcca status | fetch | build | export | run | test | web-user set <name> | ...
+#        -> python vcca_plan.py <args> as user vcca, with /etc/vcca/vcca.env and VCCA_HOME=/srv/vcca
+#   sudo vcca update [--force]   git pull --ff-only, pip install, refresh unit + wrapper, restart vcca-web
+#   sudo vcca logs [journalctl options]   follow the web service log
+set -euo pipefail
+
+APP=/opt/vcca/app
+VENV=/opt/vcca/venv
+HOME_DIR=/srv/vcca
+ENV_FILE=/etc/vcca/vcca.env
+SERVICE=vcca-web
+RUN_USER=vcca
+
+if [[ $EUID -ne 0 ]]; then
+    exec sudo -- "$0" "$@"
+fi
+
+die() { echo "vcca: $*" >&2; exit 1; }
+
+# Export KEY=VALUE lines of the env file without evaluating them as shell code
+# (values may be wrapped in single or double quotes; no escape processing).
+load_env() {
+    [[ -r $ENV_FILE ]] || die "$ENV_FILE 不存在（先运行 deploy/install.sh）"
+    local line k v
+    local re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line =~ $re ]] || continue
+        k=${BASH_REMATCH[1]}
+        v=${BASH_REMATCH[2]}
+        if [[ $v =~ ^\'(.*)\'$ || $v =~ ^\"(.*)\"$ ]]; then
+            v=${BASH_REMATCH[1]}
+        fi
+        export "$k=$v"
+    done < "$ENV_FILE"
+}
+
+run_cli() {
+    load_env
+    export VCCA_HOME=$HOME_DIR TZ=Asia/Shanghai PYTHONUNBUFFERED=1
+    cd "$APP"
+    umask 0027
+    # runuser (without -l) keeps the exported environment and the terminal (interactive password prompts work).
+    exec runuser -u "$RUN_USER" -- "$VENV/bin/python" "$APP/vcca_plan.py" "$@"
+}
+
+# Print "id cmd season" for each job record in state/jobs/*.json (format of vcca/jobs.py) that is
+# status "running" and whose process is still alive. A stale "running" record of a dead server is ignored.
+running_jobs() {
+    "$VENV/bin/python" - "$HOME_DIR/state/jobs" <<'PY'
+import json, os, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+for p in sorted(d.glob("*.json")) if d.is_dir() else []:
+    try:
+        job = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        continue
+    if not isinstance(job, dict) or job.get("status") != "running":
+        continue
+    pid = job.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        continue
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        continue
+    except PermissionError:
+        pass
+    print(job.get("id", p.stem), job.get("cmd", "?"), job.get("season") or "")
+PY
+}
+
+update() {
+    local force=0
+    for a in "$@"; do
+        case $a in
+            --force|-f) force=1 ;;
+            *) die "update: 未知参数 $a（可用 --force）" ;;
+        esac
+    done
+    [[ -d $APP/.git ]] || die "$APP 不是 git 仓库"
+
+    local jobs
+    jobs=$(running_jobs)
+    if [[ -n $jobs ]]; then
+        echo "有任务正在运行（重启服务会中断它；fetch 已抓的数据不会丢，之后可重新运行续抓）："
+        echo "$jobs" | sed 's/^/  /'
+        if [[ $force -ne 1 ]]; then
+            [[ -t 0 ]] || die "非交互环境下拒绝更新；等任务结束或使用 --force"
+            local ans
+            read -r -p "仍然更新并重启? [y/N] " ans
+            [[ $ans == [yY] || $ans == [yY][eE][sS] ]] || die "已取消"
+        fi
+    fi
+
+    echo "== git pull"
+    local before after
+    before=$(git -C "$APP" rev-parse HEAD)
+    git -C "$APP" pull --ff-only
+    after=$(git -C "$APP" rev-parse HEAD)
+    if [[ $before == "$after" ]]; then
+        echo "代码已是最新 ($after)"
+    else
+        git -C "$APP" --no-pager log --oneline "$before..$after"
+    fi
+
+    echo "== pip install"
+    "$VENV/bin/pip" install --disable-pip-version-check -q -r "$APP/requirements.txt"
+
+    echo "== systemd unit / wrapper"
+    install -m 644 "$APP/deploy/vcca-web.service" /etc/systemd/system/vcca-web.service
+    systemctl daemon-reload
+    # install replaces the file (new inode); this running script keeps reading its old copy.
+    install -m 755 "$APP/deploy/vcca" /usr/local/bin/vcca
+
+    echo "== restart $SERVICE"
+    systemctl restart "$SERVICE"
+    sleep 2
+    if systemctl is-active --quiet "$SERVICE"; then
+        echo "完成：$SERVICE 已重启（$(git -C "$APP" log -1 --format='%h %s')）"
+    else
+        systemctl --no-pager --lines=20 status "$SERVICE" || true
+        die "$SERVICE 未能启动，查看：sudo vcca logs"
+    fi
+}
+
+main() {
+    case ${1:-} in
+        update) shift; update "$@" ;;
+        logs)   shift; exec journalctl -u "$SERVICE" -f "$@" ;;
+        "")     run_cli ;;
+        *)      run_cli "$@" ;;
+    esac
+}
+
+main "$@"; exit $?
