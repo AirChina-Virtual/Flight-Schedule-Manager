@@ -105,6 +105,12 @@ class TestRun(JobTestCase):
             self.jm.start("status", None, {})
         self.assertEqual(cm.exception.job["id"], job["id"])
         self.assertTrue(self.jm.busy())
+        # let the child really start before tearDown cancels it: on Windows a venv python.exe is a launcher, and
+        # terminating it during its start-up can leave the real interpreter running (log still open -> tearDown's
+        # rmtree fails with WinError 32 after ~20 s; seen ~1 run in 25)
+        t0 = time.time()
+        while "tick 0" not in self.jm.read_log(job["id"], 0)["text"] and time.time() - t0 < 20:
+            time.sleep(0.05)
 
     def test_cancel(self):
         job = self.jm.start("fetch", "S1", {"dry_run": True})
