@@ -1,6 +1,6 @@
 """FlightRadarAPI wrapper (plan 6; step 3).
 
-Only this module touches the third-party library ``fr24_work/FlightRadarAPI`` (read-only, never modified).
+Only this module touches the third-party library ``FlightRadarAPI/`` (vendored in the code checkout) (read-only, never modified).
 ``vcca.config.ensure_flightradarapi_on_path()`` is called before importing ``FlightRadarAPI``.
 
 Ported from the former standalone scripts (removed; see git history): fr24_auth.py (login + session cache),

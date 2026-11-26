@@ -485,3 +485,40 @@ def synthetic_id(row: dict[str, Any]) -> str:
         sd = ""
     key = "|".join((s("callsign"), s("number"), orig, dest, sd))
     return "nid:" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+REQUIRED_TABLES = ("flight_rows", "fetch_log", "targets", "airport_info", "search_queries", "meta")
+
+
+def validate_db(path: Path) -> dict[str, Any]:
+    """Check that ``path`` is an fr24_cache.db with this schema (web import). Read-only. Returns
+    {'rows', 'last_fetch_at', 'targets', 'schema_version'}; raises ValueError with a readable message otherwise."""
+    uri = "file:" + Path(path).resolve().as_posix() + "?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error as e:
+        raise ValueError(f"无法打开: {e}") from None
+    try:
+        try:
+            ok = conn.execute("PRAGMA quick_check").fetchone()[0]
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        except sqlite3.Error as e:
+            raise ValueError(f"不是可读的 SQLite 数据库: {e}") from None
+        if ok != "ok":
+            raise ValueError(f"数据库损坏（quick_check: {ok}）")
+        missing = [x for x in REQUIRED_TABLES if x not in tables]
+        if missing:
+            raise ValueError(f"缺少表 {missing}（不是 fr24_cache.db？）")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(flight_rows)")}
+        need = set(_ALL_COLS) - cols
+        if need:
+            raise ValueError(f"flight_rows 缺少列 {sorted(need)}")
+        r = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        ver = r[0] if r else None
+        if ver != str(SCHEMA_VERSION):
+            raise ValueError(f"schema_version = {ver!r}，本工具需要 {SCHEMA_VERSION}")
+        return {"rows": conn.execute("SELECT count(*) FROM flight_rows").fetchone()[0],
+                "last_fetch_at": conn.execute("SELECT max(fetched_at) FROM fetch_log WHERE error IS NULL").fetchone()[0],
+                "targets": conn.execute("SELECT count(*) FROM targets").fetchone()[0], "schema_version": ver}
+    finally:
+        conn.close()

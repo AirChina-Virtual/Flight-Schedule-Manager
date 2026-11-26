@@ -1,7 +1,7 @@
 """Web app (vcca/webapp.py): auth, CSRF, path safety, read APIs, config editing, uploads, portability checks.
 
-The WSGI application is called directly (no port). Everything runs in temp dirs: VCCA_PLAN_ROOT / VCCA_STATE_DIR /
-VCCA_RULES_DIR (a copy of rules/) / VCCA_CACHE_DIR; the real season, rules, VAMSYS DB and cache are never written.
+The WSGI application is called directly (no port). Everything runs in a temp data directory (VCCA_HOME with
+settings.toml, seasons/, vamsys/, rules/ (a copy of the shipped rules), cache/, state/); the real data is never written.
 """
 
 import ast
@@ -32,38 +32,57 @@ SEASON = "2099-1"
 RUN, PREV = "2099-01-02_0300", "2099-01-01_0300"
 WS_ID = "b8d41af1-5641-4b06-a476-b39829a63d25"
 CSV_NAME = "03_routes_update_待复核_2.csv"
-REAL_PLAN_XLS = S.WORK_DIR.parent / S.SEASON / "国内航司港澳台航班计划（三字码）.xls"
+try:
+    REAL_SEASON_DIR, REAL_VAMSYS_DB = S.season_dir(), S.cfg().vamsys_db
+except Exception:  # noqa: BLE001 - no $VCCA_HOME with real data: the real-file tests are skipped
+    REAL_SEASON_DIR = REAL_VAMSYS_DB = Path("/nonexistent")
+REAL_PLAN_XLS = REAL_SEASON_DIR / "国内航司港澳台航班计划（三字码）.xls"
 
 
-def make_vamsys_db(path: Path, ws: str = WS_ID, revision: int = 7) -> Path:
-    """Minimal workspaces.db that vamsys.load_vamsys can read (no rows)."""
+def make_vamsys_db(path: Path, ws: str = WS_ID, revision: int = 7, name: str = "Test WS",
+                   extra: tuple[tuple[str, str, int], ...] = ()) -> Path:
+    """Minimal workspaces.db that vamsys.load_vamsys can read (no rows), plus a ``secrets`` table and an index like
+    the real FlightOpsDesk DB. ``extra``: more (id, name, revision) workspaces."""
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript("""
         CREATE TABLE workspaces(id TEXT PRIMARY KEY, name TEXT, json TEXT);
         CREATE TABLE workspace_revisions(workspace_id TEXT, revision INTEGER);
         CREATE TABLE resource_rows(workspace_id TEXT, resource INTEGER, collection INTEGER, ordinal INTEGER, json TEXT);
+        CREATE UNIQUE INDEX resource_row_order ON resource_rows(workspace_id, resource, collection, ordinal);
+        CREATE TABLE secrets(id TEXT PRIMARY KEY, value BLOB NOT NULL);
+        INSERT INTO secrets VALUES ('api', x'00112233');
     """)
-    conn.execute("INSERT INTO workspaces VALUES (?,?,?)", (ws, "Test WS", json.dumps({"StorageRevision": revision})))
-    conn.execute("INSERT INTO workspace_revisions VALUES (?,?)", (ws, revision))
+    for w, n, r in ((ws, name, revision),) + tuple(extra):
+        conn.execute("INSERT INTO workspaces VALUES (?,?,?)", (w, n, json.dumps({"StorageRevision": r})))
+        conn.execute("INSERT INTO workspace_revisions VALUES (?,?)", (w, r))
     conn.commit()
     conn.close()
     return path
 
 
-SEASON_TOML = f"""# test season
+def tables(path: Path) -> set[str]:
+    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    try:
+        return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+
+
+SETTINGS_TOML = f"""# test site settings
+[vamsys]
+workspace_id = "{WS_ID}"
+
+[export]
+default_cost_index = {{ CCA = 80, CAO = 150, CCD = 80, BJN = 80 }}
+"""
+
+SEASON_TOML = """# test season
 [season]
 name = "测试航季"
 start_date = "2026-10-25"
 end_date = "2027-03-27"
 plan_files = ["plan_a.xls"]
-
-[vamsys]
-db_path = "Data/workspaces.db"
-workspace_id = "{WS_ID}"
-
-[export]
-default_cost_index = {{ CCA = 80, CAO = 150, CCD = 80, BJN = 80 }}
 """
 
 
@@ -73,15 +92,16 @@ class WebTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        base = Path(cls.tmp.name)
-        cls.root, cls.state = base / "plan", base / "state"
-        cls.rules, cls.cache = base / "rules", base / "cache"
-        shutil.copytree(C.WORK_DIR / "rules", cls.rules, ignore=shutil.ignore_patterns(".history"))
+        cls.home = Path(cls.tmp.name).resolve()
+        cls.root, cls.state = cls.home / "seasons", cls.home / "state"
+        cls.rules, cls.cache = cls.home / "rules", cls.home / "cache"
+        shutil.copytree(S.RULES_TEMPLATE, cls.rules, ignore=shutil.ignore_patterns(".history"))
         cls.cache.mkdir()
         cls.sdir = cls.root / SEASON
         (cls.sdir / "output").mkdir(parents=True)
         (cls.sdir / "season.toml").write_bytes(SEASON_TOML.encode("utf-8"))
-        make_vamsys_db(cls.root / "Data" / "workspaces.db")
+        (cls.home / "settings.toml").write_bytes(SETTINGS_TOML.encode("utf-8"))
+        make_vamsys_db(cls.home / "vamsys" / "workspaces.db")
         meta, ds, _ = W.world()
         for run, (m, d) in ((RUN, (meta, ds)), (PREV, W.previous_world())):
             rd = cls.sdir / "output" / run
@@ -90,8 +110,7 @@ class WebTestCase(unittest.TestCase):
         (cls.sdir / "output" / RUN / CSV_NAME).write_bytes(b"a,b\r\n1,2\r\n")
         (cls.sdir / "output" / RUN / "summary.json").write_text(json.dumps({"counts": {"UPDATE": 1}}),
                                                                  encoding="utf-8")
-        cls.env = mock.patch.dict(os.environ, {"VCCA_PLAN_ROOT": str(cls.root), "VCCA_STATE_DIR": str(cls.state),
-                                               "VCCA_RULES_DIR": str(cls.rules), "VCCA_CACHE_DIR": str(cls.cache)})
+        cls.env = mock.patch.dict(os.environ, {"VCCA_HOME": str(cls.home)})
         cls.env.start()
         webapp.set_user(cls.state, "alice", "correct horse", iterations=1000)
         cls.app = webapp.App(cls.state)
@@ -269,6 +288,7 @@ class TestReadApis(WebTestCase):
     def test_path_traversal_rejected(self):
         cookie, _ = self.login()
         (self.root / "secret.txt").write_text("x", encoding="utf-8")
+        (self.home / "secret.txt").write_text("x", encoding="utf-8")
         bad = [f"/files/{SEASON}/{RUN}/..", f"/files/{SEASON}/{RUN}/..\\..\\secret.txt",
                f"/files/{SEASON}/{RUN}/%2e%2e%2fsecret.txt", f"/files/{SEASON}/..%2F/season.toml",
                f"/files/../{RUN}/decisions.json", f"/files/{SEASON}/{RUN}/.hidden",
@@ -289,7 +309,9 @@ class TestConfigEditing(WebTestCase):
     def setUp(self):
         self.path = self.sdir / "season.toml"
         self.path.write_bytes(SEASON_TOML.encode("utf-8"))
+        (self.home / "settings.toml").write_bytes(SETTINGS_TOML.encode("utf-8"))
         shutil.rmtree(self.sdir / ".config_history", ignore_errors=True)
+        shutil.rmtree(self.home / ".config_history", ignore_errors=True)
 
     def get_file(self, key="season"):
         st, d = self.authed("GET", "/api/config", query=f"season={SEASON}")
@@ -315,7 +337,7 @@ class TestConfigEditing(WebTestCase):
         st, d = self.authed("POST", "/api/config/save", {"season": SEASON, "key": "season", "text": SEASON_TOML,
                                                           "mtime_ns": 123})
         self.assertEqual((st, d["stage"]), (409, "conflict"))
-        bad = SEASON_TOML.replace('workspace_id = "', 'workspace_id = "x')
+        bad = SEASON_TOML + '\n[vamsys]\nworkspace_id = "x"\n'
         st, d = self.authed("POST", "/api/config/save", {"season": SEASON, "key": "season", "text": bad,
                                                           "mtime_ns": f["mtime_ns"]})
         self.assertEqual(st, 422)
@@ -341,6 +363,29 @@ class TestConfigEditing(WebTestCase):
         self.assertEqual(self.authed("GET", "/api/config/history",
                                      query=f"season={SEASON}&key=season&version=../../x")[0], 400)
 
+    def test_settings_file_and_effective_values(self):
+        f = self.get_file("settings")
+        self.assertEqual(Path(f["path"]), self.home / "settings.toml")
+        self.assertEqual(f["text"], SETTINGS_TOML)
+        new = SETTINGS_TOML + "\n[thresholds]\nbank_supersede_days = 9\n"
+        st, d = self.authed("POST", "/api/config/save", {"season": SEASON, "key": "settings", "text": new,
+                                                          "mtime_ns": f["mtime_ns"]})
+        self.assertEqual(st, 200, d)
+        self.assertEqual(len(list((self.home / ".config_history").glob("settings.*.toml"))), 1)
+        st, d = self.authed("GET", "/api/config", query=f"season={SEASON}")
+        rows = {(r["section"], r["key"]): r for r in d["effective"]["rows"]}
+        self.assertEqual((rows[("thresholds", "bank_supersede_days")]["value"],
+                          rows[("thresholds", "bank_supersede_days")]["source"]), (9, "site"))
+        self.assertTrue(rows[("thresholds", "bank_supersede_days")]["changed"])
+        self.assertEqual(rows[("season", "name")]["source"], "season")
+        self.assertEqual(rows[("fetch", "rate_per_sec")]["source"], "default")
+        bad = new.replace(f'workspace_id = "{WS_ID}"', 'workspace_id = ""')
+        f = self.get_file("settings")
+        st, d = self.authed("POST", "/api/config/save", {"season": SEASON, "key": "settings", "text": bad,
+                                                          "mtime_ns": f["mtime_ns"]})
+        self.assertEqual(st, 422)
+        self.assertTrue(any("请在数据页上传" in e for e in d["errors"]))
+
     def test_rules_file_uses_rules_dir_override(self):
         f = self.get_file("fleets")
         self.assertEqual(Path(f["path"]), self.rules / "fleets.toml")
@@ -363,29 +408,120 @@ class TestUploads(WebTestCase):
         return self.authed("POST", path, raw=data, query=query, headers=hdr)
 
     def test_vamsys_upload(self):
-        target = self.root / "Data" / "workspaces.db"
-        st, d = self.upload("/api/upload/vamsys", b"not sqlite at all, sorry", query=f"season={SEASON}")
+        target = self.home / "vamsys" / "workspaces.db"
+        q = f"season={SEASON}"
+        st, d = self.upload("/api/upload/vamsys", b"not sqlite at all, sorry", query=q)
         self.assertEqual(st, 400)
         self.assertIn("SQLite", d["error"])
-        other = make_vamsys_db(Path(self.tmp.name) / "other.db", ws="00000000-0000-0000-0000-000000000000")
-        st, d = self.upload("/api/upload/vamsys", other.read_bytes(), query=f"season={SEASON}")
-        self.assertEqual(st, 400)
-        self.assertIn("工作区", d["error"])
-        new = make_vamsys_db(Path(self.tmp.name) / "new.db", revision=99)
-        st, d = self.upload("/api/upload/vamsys", new.read_bytes(), query=f"season={SEASON}")
+        new = make_vamsys_db(Path(self.tmp.name) / "new.db", revision=99,
+                             extra=(("00000000-0000-0000-0000-00000000000a", "我的航空公司", 5),))
+        st, d = self.upload("/api/upload/vamsys", new.read_bytes(), query=q)
         self.assertEqual(st, 200, d)
-        self.assertEqual((d["revision"], d["workspace_name"]), (99, "Test WS"))
+        self.assertEqual((d["revision"], d["workspace_name"], d["selected"], d["needs_selection"]),
+                         (99, "Test WS", WS_ID, False))
+        self.assertEqual(sorted(w["name"] for w in d["workspaces"]), ["Test WS", "我的航空公司"])
+        self.assertIn("secrets", d["dropped_tables"])
         self.assertTrue((target.parent / d["backup"]).is_file())
-        self.assertEqual(target.read_bytes(), new.read_bytes())
-        self.assertEqual([p.name for p in target.parent.glob(".upload-*")], [])
-        st, dd = self.authed("GET", "/api/data", query=f"season={SEASON}")
+        self.assertEqual(tables(target), {"workspaces", "workspace_revisions", "resource_rows"})
+        self.assertEqual([p.name for p in target.parent.iterdir() if p.name.startswith(".")], [])
+        st, dd = self.authed("GET", "/api/data", query=q)
         self.assertEqual(dd["vamsys"]["revision"], 99)
         self.assertEqual(len(dd["vamsys"]["backups"]), 1)
+        self.assertEqual(len(dd["vamsys"]["workspaces"]), 2)
+
+    def test_vamsys_upload_other_workspace_and_select(self):
+        target = self.home / "vamsys" / "workspaces.db"
+        settings = self.home / "settings.toml"
+        other_ws = "11111111-2222-3333-4444-555555555555"
+        other = make_vamsys_db(Path(self.tmp.name) / "other.db", ws=other_ws, name="vCCA",
+                               extra=(("00000000-0000-0000-0000-00000000000b", "Sandbox", 1),))
+        try:
+            st, d = self.upload("/api/upload/vamsys", other.read_bytes(), query=f"season={SEASON}")
+            self.assertEqual(st, 200, d)
+            self.assertTrue(d["needs_selection"])                  # configured workspace is not in the new DB
+            self.assertEqual(d["selected"], other_ws)              # preselected by name "vCCA"
+            st, dd = self.authed("GET", "/api/data", query=f"season={SEASON}")
+            self.assertIn("没有配置的工作区", dd["vamsys"]["error"])
+            self.assertEqual(self.authed("POST", "/api/vamsys/workspace",
+                                         {"season": SEASON, "workspace_id": "nope"})[0], 400)
+            st, r = self.authed("POST", "/api/vamsys/workspace", {"season": SEASON, "workspace_id": other_ws})
+            self.assertEqual(st, 200, r)
+            self.assertTrue(r["saved"])
+            import tomllib
+            self.assertEqual(tomllib.loads(settings.read_text(encoding="utf-8"))["vamsys"]["workspace_id"], other_ws)
+            self.assertIn("# test site settings", settings.read_text(encoding="utf-8"))      # comments kept
+            self.assertEqual(len(list((self.home / ".config_history").glob("settings.*.toml"))), 1)
+            st, s = self.authed("GET", "/api/status", query=f"season={SEASON}&refresh=1")
+            self.assertTrue(s["vamsys"]["ok"], s["vamsys"])
+            self.assertEqual(s["vamsys"]["workspace_name"], "vCCA")
+        finally:
+            settings.write_bytes(SETTINGS_TOML.encode("utf-8"))
+            make_vamsys_db(Path(self.tmp.name) / "restore.db")
+            shutil.copy2(Path(self.tmp.name) / "restore.db", target)
+            shutil.rmtree(self.home / ".config_history", ignore_errors=True)
+
+    def test_set_toml_value(self):
+        t = '# c\n[vamsys]\nworkspace_id = "a"  # old\ncollection = 1\n\n[export]\nx = 1\n'
+        out = webapp.App._set_toml_value(t, "vamsys", "workspace_id", '"b"')
+        self.assertEqual(out, t.replace('"a"  # old', '"b"'))
+        self.assertEqual(webapp.App._set_toml_value("", "vamsys", "workspace_id", '"b"'),
+                         '[vamsys]\nworkspace_id = "b"\n')
+        import tomllib
+        out = webapp.App._set_toml_value("[export]\nx = 1", "vamsys", "workspace_id", '"b"')
+        self.assertEqual(tomllib.loads(out), {"export": {"x": 1}, "vamsys": {"workspace_id": "b"}})
+        out = webapp.App._set_toml_value("[vamsys]\ncollection = 1\n", "vamsys", "workspace_id", '"b"')
+        self.assertEqual(tomllib.loads(out)["vamsys"], {"collection": 1, "workspace_id": "b"})
 
     def test_upload_limits(self):
-        with mock.patch.dict(os.environ, {"VCCA_MAX_UPLOAD_MB": "0.00001"}):
+        with mock.patch.object(webapp, "MAX_UPLOAD_BYTES", 50):
             st, d = self.upload("/api/upload/vamsys", webapp.SQLITE_MAGIC + b"x" * 100, query=f"season={SEASON}")
         self.assertEqual(st, 413)
+        self.assertEqual(webapp.max_upload_bytes(), 512 * 1024 * 1024)
+
+    def test_cache_upload(self):
+        from vcca import fr24_store as FS
+
+        target = self.cache / "fr24_cache.db"
+        src = Path(self.tmp.name) / "c_src.db"
+        with FS.FR24Store(src) as stc:
+            stc.upsert_rows([{"id": "x1", "number": "CA1", "callsign": "CCA1", "origin_icao": "ZBAA",
+                              "dest_icao": "ZSSS", "sched_dep": 1793000000}], source="flight:CA1", seen_at=1793000000)
+            stc.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        st, d = self.upload("/api/upload/fr24cache", make_vamsys_db(Path(self.tmp.name) / "w.db").read_bytes(),
+                            query=f"season={SEASON}")
+        self.assertEqual(st, 400)
+        self.assertIn("fr24_cache.db", d["error"])
+        st, d = self.upload("/api/upload/fr24cache", b"garbage" * 10, query=f"season={SEASON}")
+        self.assertEqual(st, 400)
+        for n in (1, 2):
+            st, d = self.upload("/api/upload/fr24cache", src.read_bytes(), query=f"season={SEASON}")
+            self.assertEqual(st, 200, d)
+            self.assertEqual(d["rows"], 1)
+        self.assertTrue((self.cache / d["backup"]).is_file())
+        with FS.FR24Store(target, readonly=True) as ro:
+            self.assertEqual(ro.count_rows(), 1)
+        self.assertEqual([p.name for p in self.cache.iterdir() if p.name.startswith(".")], [])
+        with mock.patch.object(self.app.jobs, "current", return_value={"id": "x", "cmd": "fetch"}):
+            self.assertEqual(self.upload("/api/upload/fr24cache", src.read_bytes(), query=f"season={SEASON}")[0], 409)
+
+    @unittest.skipUnless(REAL_VAMSYS_DB.is_file(), "real workspaces.db not available")
+    def test_real_vamsys_upload_is_slim(self):
+        real = REAL_VAMSYS_DB
+        st, d = self.upload("/api/upload/vamsys", real.read_bytes(), query=f"season={SEASON}")
+        try:
+            self.assertEqual(st, 200, d)
+            target = self.home / "vamsys" / "workspaces.db"
+            self.assertEqual(tables(target), {"workspaces", "workspace_revisions", "resource_rows"})
+            names = {w["name"]: w for w in d["workspaces"]}
+            self.assertIn("vCCA", names)
+            from vcca import vamsys
+            vs = vamsys.load_vamsys(db_path=target, workspace_id=names["vCCA"]["id"], collection=1,
+                                    target_ops=("CCA", "CAO", "CCD", "BJN"))
+            self.assertEqual(vs.revision, names["vCCA"]["revision"])
+            self.assertGreater(len(vs.routes), 2000)
+        finally:
+            make_vamsys_db(Path(self.tmp.name) / "restore2.db")
+            shutil.copy2(Path(self.tmp.name) / "restore2.db", self.home / "vamsys" / "workspaces.db")
 
     def test_plan_upload_rejects(self):
         q = f"season={SEASON}"
@@ -395,6 +531,7 @@ class TestUploads(WebTestCase):
         st, d = self.upload("/api/upload/plan", webapp.OLE_MAGIC + b"\x00" * 64, query=q, filename="../evil.xls")
         self.assertEqual(st, 400)                                   # OLE header but not a parsable workbook
         self.assertFalse((self.root / "evil.xls").exists())
+        self.assertFalse((self.home / "evil.xls").exists())
         st, d = self.upload("/api/upload/plan", webapp.OLE_MAGIC, query=q, filename="x.exe")
         self.assertEqual(st, 400)
         self.assertEqual([p.name for p in self.sdir.glob(".upload-*")], [])
@@ -439,38 +576,69 @@ class TestUploads(WebTestCase):
         self.assertEqual(self.authed("POST", "/api/seasons", {"name": "2100-1", "copy_from": SEASON})[0], 409)
         self.assertEqual(self.authed("POST", "/api/seasons", {"name": "../x", "copy_from": SEASON})[0], 400)
         shutil.rmtree(self.root / "2100-1")
-
-    def test_first_season_from_template(self):
         import tomllib
-        with tempfile.TemporaryDirectory() as t, mock.patch.dict(os.environ, {"VCCA_PLAN_ROOT": t}):
+        st, d = self.authed("POST", "/api/seasons", {"name": "2100-2", "copy_from": ""})
+        self.assertEqual(st, 200, d)
+        data = tomllib.loads((self.root / "2100-2" / "season.toml").read_text(encoding="utf-8"))
+        self.assertEqual(data, {"season": {"name": "2100-2"}})                 # minimal template
+        st, s = self.authed("GET", "/api/status", query="season=2100-2")
+        self.assertEqual(s["errors"], ["[season] start_date / end_date 未填写且无法由计划文件推导"])  # only the dates:
+        # every site setting (workspace, cost index, ...) comes from settings.toml
+        shutil.rmtree(self.root / "2100-2")
+
+    def test_first_season_on_fresh_home(self):
+        import tomllib
+        with tempfile.TemporaryDirectory() as t, mock.patch.dict(os.environ, {"VCCA_HOME": t}):
             self.assertEqual(self.authed("GET", "/api/data")[0], 404)            # no season yet
             st, d = self.authed("POST", "/api/seasons", {"name": "2027-1", "copy_from": ""})
             self.assertEqual(st, 200, d)
-            data = tomllib.loads((Path(t) / "2027-1" / "season.toml").read_text(encoding="utf-8"))
+            data = tomllib.loads((Path(t) / "seasons" / "2027-1" / "season.toml").read_text(encoding="utf-8"))
             self.assertEqual(data["season"]["name"], "2027-1")
-            self.assertEqual(data["vamsys"]["db_path"], "Data/workspaces.db")
             st, d = self.authed("GET", "/api/status", query="season=2027-1")
-            self.assertFalse(d["ok"])                                             # workspace_id still to fill in
-            self.assertTrue(any("workspace_id" in e for e in d["errors"]))
+            self.assertFalse(d["ok"])                                             # workspace_id still to choose
+            self.assertTrue(any("请在数据页上传 workspaces.db 并选择工作区" in e for e in d["errors"]))
+            make_vamsys_db(Path(t) / "upload.db", name="vCCA")
+            st, d = self.authed("POST", "/api/upload/vamsys", raw=(Path(t) / "upload.db").read_bytes(),
+                                query="season=2027-1")
+            self.assertEqual((st, d["selected"], d["needs_selection"]), (200, WS_ID, True), d)
+            st, r = self.authed("POST", "/api/vamsys/workspace", {"season": "2027-1", "workspace_id": WS_ID})
+            self.assertEqual(st, 422, r)                     # rules/ are not deployed in this bare home: not saved
+            self.assertFalse((Path(t) / "settings.toml").exists())
+            shutil.copytree(S.RULES_TEMPLATE, Path(t) / "rules")
+            st, r = self.authed("POST", "/api/vamsys/workspace", {"season": "2027-1", "workspace_id": WS_ID})
+            self.assertEqual(st, 422, r)                     # default_cost_index still missing in settings.toml
+            self.assertTrue(any("default_cost_index" in e for e in r["errors"]))
 
 
 class TestPortability(unittest.TestCase):
     PKG = S.WORK_DIR / "vcca"
 
-    def test_env_overrides(self):
+    def test_home_layout(self):
         with tempfile.TemporaryDirectory() as t:
-            with mock.patch.dict(os.environ, {"VCCA_PLAN_ROOT": t, "VCCA_STATE_DIR": t + "/st",
-                                              "VCCA_RULES_DIR": t + "/r", "VCCA_CACHE_DIR": t + "/c"}):
-                self.assertEqual(C.plan_root(), Path(t).resolve())
-                self.assertEqual(C.state_dir(), Path(t, "st").resolve())
-                self.assertEqual(C.rules_dir(), Path(t, "r").resolve())
-                self.assertEqual(C.default_cache_dir(), Path(t, "c").resolve())
+            with mock.patch.dict(os.environ, {"VCCA_HOME": t}):
+                h = Path(t).resolve()
+                self.assertEqual(C.vcca_home(), h)
+                self.assertEqual(C.state_dir(), h / "state")
+                self.assertEqual(C.rules_dir(), h / "rules")
+                self.assertEqual(C.seasons_dir(), h / "seasons")
+                self.assertEqual(C.vamsys_db_path(), h / "vamsys" / "workspaces.db")
+                self.assertEqual(C.fr24_cache_dir(), h / "cache")
                 self.assertEqual(C.discover_seasons(), [])
-                (Path(t) / "s1").mkdir()
-                (Path(t) / "s1" / "season.toml").write_text("", encoding="utf-8")
-                self.assertEqual([p.name for p in C.discover_seasons()], ["s1"])
-        self.assertEqual(C.plan_root(), C.WORK_DIR.parent)
-        self.assertEqual(C.state_dir(), C.WORK_DIR / "webstate")
+                (h / "seasons" / "s1").mkdir(parents=True)
+                (h / "seasons" / "s1" / "season.toml").write_text("", encoding="utf-8")
+                (h / "seasons" / "s2").mkdir()
+                (h / "seasons" / "s2" / C.DEFAULTS["season"]["plan_files"][0]).write_bytes(b"")
+                (h / "seasons" / "junk").mkdir()
+                self.assertEqual([p.name for p in C.discover_seasons()], ["s1", "s2"])
+        with mock.patch.dict(os.environ, {"VCCA_HOME": str(Path(tempfile.gettempdir()) / "vcca-missing-home")}):
+            with self.assertRaises(C.ConfigError):
+                C.state_dir()
+
+    def test_no_windows_specific_code(self):
+        for p in self._modules():
+            text = p.read_text(encoding="utf-8")
+            for needle in ("CTRL_BREAK_EVENT", "CREATE_NEW_PROCESS_GROUP", "SIGBREAK", "webbrowser", 'os.name == "nt"'):
+                self.assertNotIn(needle, text, f"{p.name}: {needle}")
 
     def _modules(self):
         return sorted(self.PKG.glob("*.py")) + [S.WORK_DIR / "vcca_plan.py"]

@@ -15,7 +15,7 @@ import export_world as W  # noqa: E402
 from vcca import export_csv as E  # noqa: E402
 from vcca.models import CSV_FILE, DecisionCategory  # noqa: E402
 
-EXAMPLES = S.WORK_DIR.parent / "2026-27-1" / "flightopsdesk_csv"
+EXAMPLES = S.season_dir() / "flightopsdesk_csv"
 
 
 def read_rows(p: Path) -> list[dict]:

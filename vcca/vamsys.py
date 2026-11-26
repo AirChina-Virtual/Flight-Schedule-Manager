@@ -1,6 +1,8 @@
-"""Read-only loader for the FlightOpsDesk VAMSYS workspace (``Data/workspaces.db``).
+"""Read-only loader for the FlightOpsDesk VAMSYS workspace (``$VCCA_HOME/vamsys/workspaces.db``).
 
-The DB is opened with ``file:...?mode=ro`` — this module never writes. Tables used:
+The DB is opened with ``file:...?mode=ro`` — the loader never writes. ``slim_copy`` (web upload) builds the stored
+copy from an uploaded FlightOpsDesk DB with only the tables below (no secrets / app settings / batch jobs / undo
+history). Tables used:
   workspaces(id, name, json)                  json.StorageRevision
   workspace_revisions(workspace_id, revision)
   resource_rows(workspace_id, resource, collection, local_id, ordinal, json)
@@ -244,5 +246,83 @@ def read_revision(cfg: "Config") -> tuple[int | None, int | None]:
         conn.close()
 
 
+# ------------------------------------------------------------------ upload helpers (web data page) ----------------
+#: the only tables this tool reads; everything else in a FlightOpsDesk DB (secrets, app_settings, batch_*,
+#: resource_history_*, resource_metadata) is dropped from the stored copy
+KEEP_TABLES = ("workspaces", "workspace_revisions", "resource_rows")
+
+
+def slim_copy(src: Path, dst: Path) -> list[str]:
+    """Copy only ``KEEP_TABLES`` (with their indexes) of ``src`` into a NEW database ``dst`` (rollback journal, not
+    WAL), then VACUUM. ``src`` is opened read-only. Returns the names of the dropped tables. Raises ValueError when a
+    needed table is missing."""
+    src, dst = Path(src), Path(dst)
+    if dst.exists():
+        raise FileExistsError(dst)
+    s = connect_ro(src)
+    try:
+        objs = s.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL").fetchall()
+    finally:
+        s.close()
+    tables = {n for ty, n, _, _ in objs if ty == "table"}
+    missing = [x for x in KEEP_TABLES if x not in tables]
+    if missing:
+        raise ValueError(f"缺少表 {missing}（不是 FlightOpsDesk 的 workspaces.db？）")
+    d = sqlite3.connect(f"file:{dst.as_posix()}", uri=True)
+    try:
+        d.execute("PRAGMA journal_mode=DELETE")
+        d.execute("ATTACH DATABASE ? AS src", (f"file:{src.as_posix()}?mode=ro",))
+        for ty, name, tbl, sql in objs:
+            if ty == "table" and name in KEEP_TABLES:
+                d.execute(sql)
+        for name in KEEP_TABLES:
+            d.execute(f'INSERT INTO main."{name}" SELECT * FROM src."{name}"')
+        for ty, name, tbl, sql in objs:
+            if ty == "index" and tbl in KEEP_TABLES:
+                d.execute(sql)
+        d.commit()
+        d.execute("DETACH DATABASE src")
+        d.execute("VACUUM")
+    except BaseException:
+        d.close()
+        dst.unlink(missing_ok=True)
+        raise
+    d.close()
+    return sorted(tables - set(KEEP_TABLES))
+
+
+def list_workspaces(db_path: Path, collection: int = 1) -> list[dict[str, Any]]:
+    """[{id, name, revision, storage_revision, routes}] of every workspace in the DB (routes = resource 4 rows of
+    ``collection``), ordered by name."""
+    conn = connect_ro(db_path)
+    try:
+        revs = dict(conn.execute("SELECT workspace_id, revision FROM workspace_revisions"))
+        counts = dict(conn.execute("SELECT workspace_id, count(*) FROM resource_rows WHERE resource=? AND collection=? "
+                                   "GROUP BY workspace_id", (RES_ROUTES, collection)))
+        out = []
+        for wid, name, js in conn.execute("SELECT id, name, json FROM workspaces"):
+            try:
+                sr = json.loads(js).get("StorageRevision")
+            except (TypeError, ValueError, AttributeError):
+                sr = None
+            out.append({"id": wid, "name": name, "revision": revs.get(wid), "storage_revision": sr,
+                        "routes": int(counts.get(wid, 0))})
+    finally:
+        conn.close()
+    return sorted(out, key=lambda w: (str(w["name"]).lower(), w["id"]))
+
+
+def pick_workspace(workspaces: list[dict[str, Any]], configured: str = "") -> str | None:
+    """Preselection for the data page: the configured workspace when present, else the one named 'vCCA', else the
+    only one."""
+    ids = [w["id"] for w in workspaces]
+    if configured in ids:
+        return configured
+    named = [w["id"] for w in workspaces if str(w["name"]).strip().casefold() == "vcca"]
+    if named:
+        return named[0]
+    return ids[0] if len(ids) == 1 else None
+
+
 __all__ = ["VAirport", "VFleet", "VAircraft", "VamsysSnapshot", "load_vamsys", "parse_route", "read_revision",
-           "connect_ro"]
+           "connect_ro", "slim_copy", "list_workspaces", "pick_workspace", "KEEP_TABLES"]

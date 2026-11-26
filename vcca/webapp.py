@@ -1,10 +1,10 @@
 """vCCA web front end — a pure standard-library WSGI application.
 
-Local:   ``vcca_plan.py serve`` (wsgiref + threads, 127.0.0.1:8770)
-Server:  ``gunicorn --workers 1 --threads 8 vcca.webapp:application`` (see deploy/DEPLOY.md). One process only:
+Server:  ``gunicorn --workers 1 --threads 8 vcca.webapp:application`` behind nginx (see deploy/). One process only:
          the job state, sessions cache and report cache live in this process (jobs/sessions are also on disk).
+Dev:     ``vcca_plan.py serve`` (wsgiref + threads, 127.0.0.1:8770). Data: ``$VCCA_HOME`` (vcca.config).
 
-Accounts: ``STATE_DIR/users.toml`` (PBKDF2-SHA256 + salt), managed with ``vcca_plan.py web-user set <name>``.
+Accounts: ``$VCCA_HOME/state/users.toml`` (PBKDF2-SHA256 + salt), managed with ``vcca_plan.py web-user set <name>``.
 Sessions: random token in an ``HttpOnly; SameSite=Strict`` cookie (``Secure`` over HTTPS), 12 h; every write request
 must carry ``X-VCCA-CSRF`` = the session's CSRF token (returned by /api/login and /api/me). Failed logins are
 rate-limited per client address.
@@ -18,9 +18,11 @@ Routes (all JSON unless noted; everything except /, /static/*, /api/login needs 
   GET  /api/runs/<run>/zip?season=                          (zip download)
   GET  /files/<season>/<run>/<file>                         (download one file of a run folder)
   GET  /api/jobs   POST /api/jobs {cmd, season, opts}   GET /api/jobs/<id>?since=<byte>   POST /api/jobs/<id>/cancel
-  GET  /api/config?season=     GET /api/config/history?season=&key=&version=
+  GET  /api/config?season=     (files settings|season|airport_grades|fleets + "effective": every key with its source)
+  GET  /api/config/history?season=&key=&version=
   POST /api/config/validate|save|restore {season, key, text|version, mtime_ns}
-  GET  /api/data?season=       POST /api/upload/vamsys (raw body)    POST /api/upload/plan?season=&add=1 (raw body)
+  GET  /api/data?season=       POST /api/upload/vamsys (raw body)    POST /api/vamsys/workspace {season, workspace_id}
+  POST /api/upload/plan?season=&add=1 (raw body, X-Filename)      POST /api/upload/fr24cache (raw body)
 """
 
 from __future__ import annotations
@@ -60,27 +62,20 @@ USERNAME_RE = re.compile(r"[A-Za-z0-9_.\-]{1,32}")
 PBKDF2_ITERATIONS = 310_000
 MAX_JSON = 4 * 1024 * 1024
 VAMSYS_BACKUPS_KEPT = 5
+CACHE_BACKUPS_KEPT = 3
+MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 PLAN_NAME_RE = re.compile(r"[\w㐀-鿿（）()\-.+ ]{1,120}\.xls", re.IGNORECASE)
-CONFIG_KEYS = {"season": "season.toml（本航季）", "airport_grades": "rules/airport_grades.toml",
-               "fleets": "rules/fleets.toml"}
+CONFIG_KEYS = {"settings": "settings.toml（全站）", "season": "season.toml（本航季）",
+               "airport_grades": "rules/airport_grades.toml", "fleets": "rules/fleets.toml"}
 SQLITE_MAGIC = b"SQLite format 3\x00"
 OLE_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
-SEASON_TEMPLATE = """# vCCA 航季配置（网页新建 {created}）。每个键都有默认值，见 fr24_work/vcca/config.py DEFAULTS。
+SEASON_TEMPLATE = """# vCCA 航季配置（网页新建 {created}）。只写本航季的设置；全站设置（工作区、航司、Cost Index、阈值…）
+# 在 $VCCA_HOME/settings.toml，这里写同名键可只对本航季覆盖。
 [season]
 name = "{name}"
 # start_date = "YYYY-MM-DD"   # 留空：取计划 FD23/FD24 众数
 # end_date   = "YYYY-MM-DD"
-plan_files = [
-{files},
-]
-
-[vamsys]
-db_path      = "Data/workspaces.db"   # 相对数据目录 (VCCA_PLAN_ROOT)
-workspace_id = ""                     # 必填：VAMSYS 工作区 UUID
-collection   = 1
-
-[export]
-default_cost_index = {{ CCA = 80, CAO = 150, CCD = 80, BJN = 80 }}
+# plan_files 默认是三份 CAAC "（三字码）.xls"；上传其他文件名时网页会自动加进来
 """
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
@@ -96,10 +91,7 @@ def _stamp() -> str:
 
 
 def max_upload_bytes() -> int:
-    try:
-        return int(float(os.environ.get("VCCA_MAX_UPLOAD_MB", "512")) * 1024 * 1024)
-    except ValueError:
-        return 512 * 1024 * 1024
+    return MAX_UPLOAD_BYTES
 
 
 # =====================================================================================================================
@@ -359,6 +351,8 @@ class App:
             ("GET", re.compile(r"/api/data"), self.h_data, True),
             ("POST", re.compile(r"/api/upload/vamsys"), self.h_upload_vamsys, True),
             ("POST", re.compile(r"/api/upload/plan"), self.h_upload_plan, True),
+            ("POST", re.compile(r"/api/vamsys/workspace"), self.h_vamsys_workspace, True),
+            ("POST", re.compile(r"/api/upload/fr24cache"), self.h_upload_cache, True),
         ]
 
     # ------------------------------------------------------------------ WSGI entry
@@ -499,7 +493,7 @@ class App:
 
     def h_me(self, req: Request) -> Response:
         return json_response({"user": req.user, "csrf": req.session["csrf"],
-                              "plan_root": str(C.plan_root()), "max_upload_mb": max_upload_bytes() // 2 ** 20})
+                              "home": str(C.vcca_home()), "max_upload_mb": max_upload_bytes() // 2 ** 20})
 
     # ------------------------------------------------------------------ static
     def h_index(self, req: Request) -> Response:
@@ -514,10 +508,10 @@ class App:
 
     # ------------------------------------------------------------------ seasons / status
     def _season_dir(self, name: str | None, *, required: bool = False) -> Path:
-        seasons = C.discover_seasons(C.plan_root())
+        seasons = C.discover_seasons()
         if not name:
             if required or not seasons:
-                raise HTTPError(404, "没有航季（PLAN_ROOT 下没有含 season.toml 的文件夹）")
+                raise HTTPError(404, "没有航季（$VCCA_HOME/seasons 下没有航季文件夹）")
             return seasons[-1]
         if not SEASON_RE.fullmatch(name):
             raise HTTPError(400, "航季名不合法")
@@ -528,37 +522,38 @@ class App:
 
     def h_seasons(self, req: Request) -> Response:
         out = []
-        for p in C.discover_seasons(C.plan_root()):
+        for p in C.discover_seasons():
             item: dict[str, Any] = {"name": p.name}
             try:
-                d = tomllib.loads((p / C.SEASON_FILE).read_text(encoding="utf-8")).get("season", {})
+                f = p / C.SEASON_FILE
+                d = tomllib.loads(f.read_text(encoding="utf-8")).get("season", {}) if f.is_file() else {}
                 item.update(label=d.get("name") or p.name, start_date=str(d.get("start_date") or ""),
                             end_date=str(d.get("end_date") or ""))
             except (OSError, tomllib.TOMLDecodeError) as e:
                 item.update(label=p.name, error=str(e))
             out.append(item)
         return json_response({"seasons": out, "default": out[-1]["name"] if out else None,
-                              "plan_root": str(C.plan_root())})
+                              "home": str(C.vcca_home())})
 
     def h_season_create(self, req: Request) -> Response:
         d = req.json()
         name, src = str(d.get("name", "")).strip(), str(d.get("copy_from", "")).strip()
         if not SEASON_RE.fullmatch(name):
             raise HTTPError(400, "航季文件夹名只能用字母、数字、. _ -（如 2027-1）")
-        dst = C.plan_root() / name
-        if dst.exists() and (dst / C.SEASON_FILE).exists():
+        dst = C.seasons_dir() / name
+        if C.is_season_dir(dst):
             raise HTTPError(409, f"航季 {name} 已存在")
-        if src or C.discover_seasons(C.plan_root()):
-            src_dir = self._season_dir(src or None)
+        if src:
+            src_dir = self._season_dir(src)
+            sf = src_dir / C.SEASON_FILE
             text = f"# 由网页从航季 {src_dir.name} 复制（{_utcnow_iso()}）\n" + \
-                (src_dir / C.SEASON_FILE).read_text(encoding="utf-8")
-        else:                       # first season on a fresh server: minimal template (workspace_id to fill in)
-            text = SEASON_TEMPLATE.format(name=name, created=_utcnow_iso(),
-                                          files=",\n".join(f'    "{f}"' for f in C.DEFAULTS["season"]["plan_files"]))
+                (sf.read_text(encoding="utf-8") if sf.is_file() else f'[season]\nname = "{name}"\n')
+        else:                       # minimal template: site settings come from settings.toml
+            text = SEASON_TEMPLATE.format(name=name, created=_utcnow_iso())
         dst.mkdir(parents=True, exist_ok=True)
         (dst / C.SEASON_FILE).write_text(text, encoding="utf-8")
         return json_response({"ok": True, "season": name,
-                              "next": "上传本季 CAAC 计划 .xls，并在配置页修改 [season] 的 name / 日期 / plan_files"})
+                              "next": "上传本季 CAAC 计划 .xls，并在配置页修改 [season] 的 name / 日期"})
 
     def h_status(self, req: Request) -> Response:
         sdir = self._season_dir(req.query.get("season"))
@@ -580,14 +575,10 @@ class App:
         return json_response(out)
 
     def _status_signature(self, sdir: Path) -> tuple:
-        paths = [sdir / C.SEASON_FILE, C.rules_dir() / "airport_grades.toml", C.rules_dir() / "fleets.toml",
-                 sdir / "output"]
+        lay = C.layout()
+        paths = [lay.settings, sdir / C.SEASON_FILE, lay.rules / "airport_grades.toml", lay.rules / "fleets.toml",
+                 sdir / "output", lay.vamsys_db, lay.cache / C.CACHE_DB_NAME]
         paths += list(sdir.glob("*.xls"))
-        try:
-            cfg = C.load_config(sdir, strict=False, derive_dates=False)
-            paths += [cfg.vamsys_db, cfg.cache_db]
-        except C.ConfigError:
-            pass
         sig = []
         for p in paths:
             try:
@@ -797,9 +788,14 @@ class App:
             raise HTTPError(409, f"任务 {cur['cmd']} 正在运行，完成后再修改配置或数据", job=cur)
 
     # ------------------------------------------------------------------ config
-    def _config_paths(self, sdir: Path, key: str) -> tuple[Path, Path]:
+    def _config_paths(self, sdir: Path | None, key: str) -> tuple[Path, Path]:
         """(file, history dir)."""
+        if key == "settings":
+            lay = C.layout()
+            return lay.settings, lay.settings_history
         if key == "season":
+            if sdir is None:
+                raise HTTPError(404, "没有航季")
             return sdir / C.SEASON_FILE, sdir / ".config_history"
         if key in ("airport_grades", "fleets"):
             return C.rules_dir() / f"{key}.toml", C.rules_dir() / ".history"
@@ -829,7 +825,12 @@ class App:
                 text, mtime_ns = "", None
             files.append({"key": key, "label": label, "path": str(path), "text": text, "mtime_ns": mtime_ns,
                           "history": self._history(hist, path.stem)})
-        return json_response({"season": sdir.name, "files": files, "busy": self.jobs.current() is not None})
+        try:
+            effective = C.effective_values(sdir)
+        except C.ConfigError as e:
+            effective = {"rows": [], "warnings": list(e.errors)}
+        return json_response({"season": sdir.name, "files": files, "effective": effective,
+                              "busy": self.jobs.current() is not None})
 
     def h_config_history(self, req: Request) -> Response:
         sdir = self._season_dir(req.query.get("season"))
@@ -842,12 +843,17 @@ class App:
             raise HTTPError(404, "没有这个历史版本")
         return json_response({"version": version, "text": p.read_bytes().decode("utf-8", errors="replace")})
 
-    def _validate(self, sdir: Path, path: Path, text: str) -> tuple[int, dict]:
-        """Full validation of ``text`` as the content of ``path`` without touching the file."""
+    def _validate(self, sdir: Path | None, path: Path, text: str) -> tuple[int, dict]:
+        """Full validation of ``text`` as the content of ``path`` without touching the file. Without a season
+        (settings.toml on a fresh server) only the TOML syntax and the known sections/keys are checked."""
         try:
             tomllib.loads(text)
         except tomllib.TOMLDecodeError as e:
             return 400, {"ok": False, "stage": "syntax", "syntax": _toml_error(e), "errors": [str(e)]}
+        if sdir is None:
+            with C.text_overrides({path: text}):
+                eff = C.effective_values(None)
+            return 200, {"ok": True, "warnings": eff["warnings"], "summary": None}
         try:
             with C.text_overrides({path: text}):
                 cfg = C.load_config(sdir, strict=False)
@@ -866,7 +872,7 @@ class App:
         status, res = self._validate(sdir, path, str(d.get("text", "")))
         return json_response(res, status)
 
-    def _save_config(self, sdir: Path, key: str, text: str, mtime_ns: Any) -> tuple[int, dict]:
+    def _save_config(self, sdir: Path | None, key: str, text: str, mtime_ns: Any) -> tuple[int, dict]:
         self._require_idle()
         path, hist = self._config_paths(sdir, key)
         with self._write_lock:
@@ -882,6 +888,7 @@ class App:
             if not res["ok"]:
                 return status, res
             hist.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             backup = None
             if path.is_file():
                 backup = hist / f"{path.stem}.{_stamp()}.toml"
@@ -894,10 +901,13 @@ class App:
             tmp.write_bytes(text.encode("utf-8"))
             os.replace(tmp, path)
             try:                                    # re-check from disk; restore the old file if it fails
-                C.load_config(sdir, strict=False)
+                if sdir is not None:
+                    C.load_config(sdir, strict=False)
             except Exception as e:  # noqa: BLE001
                 if backup:
                     shutil.copy2(backup, path)
+                else:
+                    path.unlink(missing_ok=True)
                 return 422, {"ok": False, "stage": "config", "errors": [f"保存后校验失败，已还原: {e}"]}
             with self._lock:
                 self._status_cache.clear()
@@ -923,36 +933,63 @@ class App:
         return json_response(res, status)
 
     # ------------------------------------------------------------------ data
-    def _vamsys_target(self, sdir: Path) -> tuple[Path, Any]:
+    @staticmethod
+    def _site_vamsys(sdir: Path | None) -> dict[str, Any]:
+        """Effective [vamsys] workspace_id / collection and [operators] target, also when the config is invalid."""
         try:
-            cfg = C.load_config(sdir, strict=False, derive_dates=False)
-            return cfg.vamsys_db, cfg
+            rows = C.effective_values(sdir)["rows"]
         except C.ConfigError:
-            return C.plan_root() / "Data" / "workspaces.db", None
+            rows = []
+        val = {f"{r['section']}.{r['key']}": r for r in rows}
+
+        def get(k, default):
+            return val[k]["value"] if k in val else default
+        coll = get("vamsys.collection", C.DEFAULTS["vamsys"]["collection"])
+        return {"workspace_id": str(get("vamsys.workspace_id", "") or ""),
+                "workspace_source": val.get("vamsys.workspace_id", {}).get("source", "default"),
+                "collection": coll if isinstance(coll, int) else 1,
+                "ops": [str(x).upper() for x in get("operators.target", C.DEFAULTS["operators"]["target"])]}
 
     @staticmethod
-    def _vamsys_backups(target: Path) -> list[Path]:
+    def _backups(target: Path) -> list[Path]:
+        """``<stem>.<YYYYmmdd-HHMMSS>.db`` next to ``target``, newest first."""
         rx = re.compile(re.escape(target.stem) + r"\.\d{8}-\d{6}\.db")
         return sorted((p for p in target.parent.glob(f"{target.stem}.*.db") if rx.fullmatch(p.name)),
                       key=lambda p: p.name, reverse=True) if target.parent.is_dir() else []
 
+    _vamsys_backups = _backups
+
     def h_data(self, req: Request) -> Response:
         sdir = self._season_dir(req.query.get("season"))
-        target, cfg = self._vamsys_target(sdir)
+        lay = C.layout()
+        site = self._site_vamsys(sdir)
+        target = lay.vamsys_db
         vs = _file_meta(target)
-        if vs["exists"] and cfg is not None:
-            try:
-                from . import vamsys
+        vs.update(workspace_id=site["workspace_id"] or None, workspace_source=site["workspace_source"],
+                  workspaces=[], selected=None)
+        if vs["exists"]:
+            from . import vamsys
 
-                vs["revision"], vs["storage_revision"] = vamsys.read_revision(cfg)
+            try:
+                vs["workspaces"] = vamsys.list_workspaces(target, site["collection"])
+                vs["selected"] = vamsys.pick_workspace(vs["workspaces"], site["workspace_id"])
+                cur = next((w for w in vs["workspaces"] if w["id"] == site["workspace_id"]), None)
+                if cur:
+                    vs["revision"], vs["storage_revision"] = cur["revision"], cur["storage_revision"]
+                elif site["workspace_id"]:
+                    vs["error"] = f"数据库里没有配置的工作区 {site['workspace_id']}，请在下面重新选择"
             except Exception as e:  # noqa: BLE001
                 vs["error"] = str(e)
-        vs["workspace_id"] = cfg.workspace_id if cfg else None
-        vs["backups"] = [_file_meta(p) for p in self._vamsys_backups(target)]
-        configured = []
+        vs["backups"] = [_file_meta(p) for p in self._backups(target)]
+        cache_db = lay.cache / C.CACHE_DB_NAME
+        cache = _file_meta(cache_db)
+        cache["backups"] = [_file_meta(p) for p in self._backups(cache_db)]
+        configured = list(C.DEFAULTS["season"]["plan_files"])
         try:
-            configured = list(tomllib.loads((sdir / C.SEASON_FILE).read_text(encoding="utf-8"))
-                              .get("season", {}).get("plan_files", C.DEFAULTS["season"]["plan_files"]))
+            sf = sdir / C.SEASON_FILE
+            if sf.is_file():
+                configured = list(tomllib.loads(sf.read_text(encoding="utf-8")).get("season", {})
+                                  .get("plan_files", configured))
         except (OSError, tomllib.TOMLDecodeError):
             pass
         names = sorted(set(configured) | {p.name for p in sdir.glob("*.xls")})
@@ -961,8 +998,9 @@ class App:
             m = _file_meta(sdir / n)
             m["configured"] = n in configured
             plan.append(m)
-        return json_response({"season": sdir.name, "season_dir": str(sdir), "vamsys": vs, "plan_files": plan,
-                              "max_upload_mb": max_upload_bytes() // 2 ** 20, "busy": self.jobs.current() is not None})
+        return json_response({"season": sdir.name, "season_dir": str(sdir), "vamsys": vs, "cache": cache,
+                              "plan_files": plan, "max_upload_mb": max_upload_bytes() // 2 ** 20,
+                              "busy": self.jobs.current() is not None})
 
     def _receive(self, req: Request, dest_dir: Path, magic: bytes) -> Path:
         """Stream the raw request body into a temp file in ``dest_dir`` (same file system as the target)."""
@@ -998,74 +1036,168 @@ class App:
             tmp.unlink(missing_ok=True)
             raise
 
+    @staticmethod
+    def _drop_side_files(db: Path) -> None:
+        """Remove the -wal/-shm files a read-only open of a WAL-mode database leaves behind (only empty -wal)."""
+        for side in ("-wal", "-shm"):
+            sp = db.with_name(db.name + side)
+            try:
+                if side == "-shm" or sp.stat().st_size == 0:
+                    sp.unlink()
+            except OSError:
+                pass
+
+    def _install(self, new: Path, target: Path, keep: int) -> Path | None:
+        """Atomically replace ``target`` by ``new`` (same directory). The old file is renamed to
+        ``<stem>.<time>.db``; only the newest ``keep`` backups are kept. Returns the backup path."""
+        backup = None
+        try:
+            if target.is_file():
+                backup = target.with_name(f"{target.stem}.{_stamp()}.db")
+                os.replace(target, backup)
+            for side in ("-wal", "-shm"):          # never let an old -wal/-shm meet the new file
+                target.with_name(target.name + side).unlink(missing_ok=True)
+            os.replace(new, target)
+        except OSError as e:
+            new.unlink(missing_ok=True)
+            if backup and backup.is_file() and not target.exists():
+                os.replace(backup, target)
+            raise HTTPError(409, f"替换失败（文件可能被占用）: {e}") from None
+        for old in self._backups(target)[keep:]:
+            old.unlink(missing_ok=True)
+        return backup
+
     def h_upload_vamsys(self, req: Request) -> Response:
+        """Upload -> temp file -> slim copy (only the tables this tool reads; no secrets) -> VACUUM -> validate
+        -> atomic replace of $VCCA_HOME/vamsys/workspaces.db with backup rotation."""
         self._require_idle()
-        sdir = self._season_dir(req.query.get("season"))
-        target, cfg = self._vamsys_target(sdir)
+        sdir = self._season_dir(req.query.get("season")) if C.discover_seasons() else None
+        target = C.layout().vamsys_db
+        site = self._site_vamsys(sdir)
         with self._write_lock:
             wal = target.with_name(target.name + "-wal")
             if wal.is_file() and wal.stat().st_size > 0:
-                raise HTTPError(409, "数据库正被其他程序使用（存在未合并的 -wal 文件），请先关闭 VAMSYS 客户端")
+                raise HTTPError(409, "数据库正被其他程序使用（存在未合并的 -wal 文件）")
             try:
                 tmp = self._receive(req, target.parent, SQLITE_MAGIC)
             except HTTPError as e:
                 if e.message == "文件格式不对":
                     e.message = "不是 SQLite 数据库文件（workspaces.db）"
                 raise
+            slim = tmp.with_name(tmp.name.replace(".upload-", ".slim-"))
             try:
-                info = self._check_vamsys(tmp, cfg)
+                from . import vamsys
+
+                dropped = vamsys.slim_copy(tmp, slim)
+                info = self._check_vamsys(slim, site)
+                info["dropped_tables"] = dropped
             except Exception as e:  # noqa: BLE001
-                tmp.unlink(missing_ok=True)
+                slim.unlink(missing_ok=True)
                 raise HTTPError(400, f"无法读取上传的数据库: {e}") from None
-            finally:   # read-only opens of a WAL-mode file leave empty -wal/-shm side files behind
-                for side in ("-wal", "-shm"):
-                    sp = tmp.with_name(tmp.name + side)
-                    try:
-                        if side == "-shm" or sp.stat().st_size == 0:
-                            sp.unlink()
-                    except OSError:
-                        pass
-            backup = None
-            try:
-                if target.is_file():
-                    backup = target.with_name(f"{target.stem}.{_stamp()}.db")
-                    os.replace(target, backup)
-                os.replace(tmp, target)
-            except OSError as e:
+            finally:
                 tmp.unlink(missing_ok=True)
-                if backup and backup.is_file() and not target.exists():
-                    os.replace(backup, target)
-                raise HTTPError(409, f"替换失败（文件可能被占用）: {e}") from None
-            for old in self._vamsys_backups(target)[VAMSYS_BACKUPS_KEPT:]:
-                old.unlink(missing_ok=True)
+                self._drop_side_files(tmp)
+            backup = self._install(slim, target, VAMSYS_BACKUPS_KEPT)
             with self._lock:
                 self._status_cache.clear()
                 self._vamsys_cache = None
-        return json_response({"ok": True, "path": str(target), "backup": backup.name if backup else None, **info,
-                              "next": "数据已更新，建议运行 build（或 run）重新计算"})
+        nxt = ("数据已更新，建议运行 build（或 run）重新计算" if not info["needs_selection"]
+               else "数据已更新。请在下面选择工作区并保存，然后运行 build")
+        return json_response({"ok": True, "path": str(target), "backup": backup.name if backup else None,
+                              "size": target.stat().st_size, **info, "next": nxt})
 
     @staticmethod
-    def _check_vamsys(path: Path, cfg: Any) -> dict:
-        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
-        try:
-            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            need = {"workspaces", "workspace_revisions", "resource_rows"}
-            if need - tables:
-                raise ValueError(f"缺少表 {sorted(need - tables)}")
-            ws = [r[0] for r in conn.execute("SELECT id FROM workspaces")]
-        finally:
-            conn.close()
-        info: dict[str, Any] = {"workspaces": ws}
-        if cfg is not None:
-            from . import vamsys
+    def _check_vamsys(path: Path, site: dict[str, Any]) -> dict:
+        """Every workspace of the (slim) DB must load with vamsys.load_vamsys; returns the list + preselection."""
+        from . import vamsys
 
-            if cfg.workspace_id not in ws:
-                raise ValueError(f"数据库里没有配置的工作区 {cfg.workspace_id}")
-            vs = vamsys.load_vamsys(cfg, db_path=path)
-            c = vs.counts()
-            info.update(workspace_name=vs.workspace_name, revision=vs.revision, storage_revision=vs.storage_revision,
-                        routes=c["routes"], airports=c["airports"])
+        wss = vamsys.list_workspaces(path, site["collection"])
+        if not wss:
+            raise ValueError("数据库里没有工作区")
+        for w in wss:
+            try:
+                vs = vamsys.load_vamsys(db_path=path, workspace_id=w["id"], collection=site["collection"],
+                                        target_ops=site["ops"])
+                c = vs.counts()
+                w.update(ok=True, airports=c["airports"], commercial_routes=c["commercial_routes"])
+            except Exception as e:  # noqa: BLE001
+                w.update(ok=False, error=f"{type(e).__name__}: {e}")
+        if not any(w["ok"] for w in wss):
+            raise ValueError("没有可读取的工作区: " + "; ".join(f"{w['name']}: {w['error']}" for w in wss))
+        sel = vamsys.pick_workspace([w for w in wss if w["ok"]], site["workspace_id"])
+        info: dict[str, Any] = {"workspaces": wss, "selected": sel, "configured": site["workspace_id"] or None,
+                                "needs_selection": sel is None or sel != site["workspace_id"]}
+        cur = next((w for w in wss if w["id"] == sel), None)
+        if cur:
+            info.update(workspace_name=cur["name"], revision=cur["revision"],
+                        storage_revision=cur["storage_revision"], routes=cur["routes"])
         return info
+
+    def h_vamsys_workspace(self, req: Request) -> Response:
+        """Write the chosen workspace to settings.toml [vamsys] workspace_id (validated save path, with history)."""
+        d = req.json()
+        wid = str(d.get("workspace_id", "")).strip()
+        sdir = self._season_dir(d.get("season") or None) if C.discover_seasons() else None
+        lay = C.layout()
+        from . import vamsys
+
+        try:
+            ids = {w["id"] for w in vamsys.list_workspaces(lay.vamsys_db)}
+        except Exception as e:  # noqa: BLE001
+            raise HTTPError(409, f"无法读取 VAMSYS 数据库: {e}") from None
+        if wid not in ids:
+            raise HTTPError(400, "数据库里没有这个工作区")
+        path = lay.settings
+        try:
+            text, mtime = path.read_bytes().decode("utf-8"), path.stat().st_mtime_ns
+        except OSError:
+            text, mtime = "", None
+        new = self._set_toml_value(text, "vamsys", "workspace_id", json.dumps(wid))
+        if new == text:
+            res: dict[str, Any] = {"ok": True, "saved": False}
+            status = 200
+        else:
+            status, res = self._save_config(sdir, "settings", new, mtime)
+        if res.get("ok") and self._site_vamsys(sdir)["workspace_source"] == "season":
+            res.setdefault("warnings", []).append(
+                f"航季 {sdir.name} 的 season.toml 里也写了 [vamsys] workspace_id，它会覆盖全站设置")
+        res["workspace_id"] = wid
+        return json_response(res, status)
+
+    def h_upload_cache(self, req: Request) -> Response:
+        """Import an fr24_cache.db: temp file -> schema check -> backup the current one -> atomic replace."""
+        self._require_idle()
+        from . import fr24_store
+
+        target = C.layout().cache / C.CACHE_DB_NAME
+        with self._write_lock:
+            try:
+                tmp = self._receive(req, target.parent, SQLITE_MAGIC)
+            except HTTPError as e:
+                if e.message == "文件格式不对":
+                    e.message = "不是 SQLite 数据库文件（fr24_cache.db）"
+                raise
+            try:
+                info = fr24_store.validate_db(tmp)
+            except Exception as e:  # noqa: BLE001
+                tmp.unlink(missing_ok=True)
+                raise HTTPError(400, f"不是有效的 fr24_cache.db: {e}") from None
+            finally:
+                self._drop_side_files(tmp)
+            if target.is_file():                    # fold a pending WAL into the old file before it is renamed
+                try:
+                    conn = sqlite3.connect(str(target), timeout=5)
+                    try:
+                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    finally:
+                        conn.close()
+                except sqlite3.Error:
+                    pass
+            backup = self._install(tmp, target, CACHE_BACKUPS_KEPT)
+            with self._lock:
+                self._status_cache.clear()
+        return json_response({"ok": True, "path": str(target), "backup": backup.name if backup else None, **info,
+                              "next": "FR24 缓存已替换，建议运行 build 重新计算"})
 
     def h_upload_plan(self, req: Request) -> Response:
         self._require_idle()
@@ -1122,40 +1254,59 @@ class App:
         return info
 
     @staticmethod
-    def _set_season_array(text: str, key: str, values: list[str], *, multiline: bool = False) -> str | None:
-        """Replace (or add) ``key = [...]`` inside the [season] table of season.toml text; comments elsewhere stay.
-        None when there is no [season] table."""
+    def _set_toml_value(text: str, table: str, key: str, rendered: str, *, create: bool = True) -> str | None:
+        """Replace (or add) ``key = <rendered>`` inside ``[table]`` of TOML text; comments elsewhere stay. A missing
+        table is appended (``create``) or gives None. Multi-line arrays are replaced as a whole."""
         nl = "\r\n" if "\r\n" in text else "\n"          # keep the file's line endings
-        if multiline:
-            arr = f"{key} = [{nl}" + "".join(f"    {json.dumps(v, ensure_ascii=False)},{nl}" for v in values) + "]"
-        else:
-            arr = f"{key} = [" + ", ".join(json.dumps(v, ensure_ascii=False) for v in values) + "]"
-        ms = re.search(r"(?m)^\[season\][ \t]*(#[^\r\n]*)?(?=\r?$)", text)
+        ms = re.search(r"(?m)^\[" + re.escape(table) + r"\][ \t]*(#[^\r\n]*)?(?=\r?$)", text)
         if not ms:
-            return None
+            if not create:
+                return None
+            sep = "" if not text or text.endswith("\n") else nl
+            return text + sep + (nl if text.strip() else "") + f"[{table}]{nl}{key} = {rendered}{nl}"
         nxt = re.search(r"(?m)^\[", text[ms.end():])                  # next table header (column 0)
         end = ms.end() + nxt.start() if nxt else len(text)
-        m = re.search(r"(?ms)^" + re.escape(key) + r"\s*=\s*\[.*?\]", text[ms.end():end])
+        if rendered.startswith("["):
+            pat = r"(?ms)^" + re.escape(key) + r"\s*=\s*\[.*?\]"
+        else:
+            pat = r"(?m)^" + re.escape(key) + r"[ \t]*=[^\r\n]*"
+        m = re.search(pat, text[ms.end():end])
         if m:
-            return text[:ms.end() + m.start()] + arr + text[ms.end() + m.end():]
-        return text[:ms.end()] + nl + arr + text[ms.end():]
+            return text[:ms.end() + m.start()] + f"{key} = {rendered}" + text[ms.end() + m.end():]
+        return text[:ms.end()] + nl + f"{key} = {rendered}" + text[ms.end():]
+
+    @classmethod
+    def _set_season_array(cls, text: str, key: str, values: list[str], *, multiline: bool = False) -> str | None:
+        """Replace (or add) ``key = [...]`` inside the [season] table of season.toml text; comments elsewhere stay.
+        None when there is no [season] table."""
+        nl = "\r\n" if "\r\n" in text else "\n"
+        if multiline:
+            arr = f"[{nl}" + "".join(f"    {json.dumps(v, ensure_ascii=False)},{nl}" for v in values) + "]"
+        else:
+            arr = "[" + ", ".join(json.dumps(v, ensure_ascii=False) for v in values) + "]"
+        return cls._set_toml_value(text, "season", key, arr, create=False)
 
     def _add_plan_file(self, sdir: Path, name: str) -> dict:
-        """Append ``name`` to [season] plan_files in season.toml (validated, backed up). Returns a result dict."""
+        """Append ``name`` to [season] plan_files in season.toml (validated, backed up; the file and its [season]
+        table are created when missing). Returns a result dict."""
         path = sdir / C.SEASON_FILE
-        text = path.read_bytes().decode("utf-8")
+        try:
+            text, mtime = path.read_bytes().decode("utf-8"), path.stat().st_mtime_ns
+        except OSError:
+            text, mtime = "", None
         data = tomllib.loads(text)
         files = list(data.get("season", {}).get("plan_files", C.DEFAULTS["season"]["plan_files"]))
         if name in files:
             return {"ok": True, "changed": False}
         files.append(name)
         new = self._set_season_array(text, "plan_files", files, multiline=True)
-        groups = list(data.get("season", {}).get("plan_groups") or [])
-        if groups and new is not None:      # explicit labels must stay one per file
-            new = self._set_season_array(new, "plan_groups", groups + [C._default_group_label(name)])
         if new is None:
-            return {"ok": False, "errors": ["season.toml 没有 [season] 节，请在配置页手动添加 plan_files"]}
-        status, res = self._save_config(sdir, "season", new, path.stat().st_mtime_ns)
+            new = self._set_toml_value(text, "season", "plan_files", "[]")
+            new = self._set_season_array(new, "plan_files", files, multiline=True)
+        groups = list(data.get("season", {}).get("plan_groups") or [])
+        if groups:      # explicit labels must stay one per file
+            new = self._set_season_array(new, "plan_groups", groups + [C._default_group_label(name)])
+        status, res = self._save_config(sdir, "season", new, mtime)
         res["changed"] = res.get("ok", False)
         return res
 

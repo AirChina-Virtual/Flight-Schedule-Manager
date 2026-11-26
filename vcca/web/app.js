@@ -144,8 +144,7 @@ function pageOverview(P,arg,tok){
    (pl.rows!=null?'<div class="kv2" style="margin-top:8px"><div>各文件行数</div><div>'+Object.keys(pl.rows_by_file).map(function(k){return esc(k)+" "+pl.rows_by_file[k];}).join("<br>")+"</div><div>航段（按航司）</div><div>"+pl.legs_by_op.map(function(x){return esc(x[0])+" "+x[1];}).join(", ")+"</div><div>单日行航段</div><div>"+pl.single_day+"</div><div>FD23/FD24 众数</div><div>"+esc(pl.fd23)+"/"+esc(pl.fd24)+"</div></div>":"")+"</div>");
   h.push('<div class="panel"><h3>VAMSYS</h3>'+(v.ok?'<div class="kv2"><div>文件</div><div>'+esc(v.path)+" ("+fmtSize(v.size)+", "+fmtTime(v.mtime)+")</div><div>工作区</div><div>"+esc(v.workspace_name)+" · revision "+v.revision+" · StorageRevision "+v.storage_revision+"</div><div>机场/机队/飞机/航路</div><div>"+[v.counts.airports,v.counts.fleets,v.counts.aircraft,v.counts.routings].join(" / ")+"</div><div>航线</div><div>"+v.counts.routes+"（商业 "+v.counts.commercial_routes+"，特殊 "+v.counts.special_routes+"，已设 End Date "+v.counts.routes_with_end_date+"）</div><div>按呼号前缀</div><div>"+Object.keys(v.counts.routes_by_op).map(function(k){return k+" "+v.counts.routes_by_op[k];}).join(", ")+"</div></div>":'<div class="msg err">'+esc(v.error||("数据库不存在: "+v.path))+"</div>")+"</div>");
   h.push('<div class="panel"><h3>FR24 账号（只检查是否存在，不显示内容）</h3><div class="tbox"><table class="tbl"><tbody>'+cr.checked.map(function(x){return "<tr><td>"+(x.user&&x.password?'<span class="tag ok">OK</span>':(x.user||x.password?'<span class="tag bad">不全</span>':'<span class="tag">无</span>'))+'</td><td class="wrap">'+esc(x.path)+"</td><td>FR24_USER "+(x.user?"有":"无")+"，FR24_PASSWORD "+(x.password?"有":"无")+"</td></tr>";}).join("")+"</tbody></table></div><p>将使用："+esc(cr.source||"（未找到账号）")+"</p></div>");
-  h.push('<div class="panel"><h3>FR24 缓存</h3><div class="kv2"><div>目录</div><div>'+esc(ca.dir)+"</div><div>fr24_cache.db</div><div>"+(ca.db.exists?fmtSize(ca.db.size)+"，"+fmtTime(ca.db.mtime):"尚未创建")+"</div>"+(st?"<div>行数</div><div>"+st.rows+"</div><div>最后抓取</div><div>"+esc(st.last_fetch_fmt||"无")+"</div><div>目标</div><div>"+esc(JSON.stringify(st.targets_by_priority))+"</div><div>过期目标</div><div>"+st.stale_targets+"</div>":"")+
-   ca.legacy.map(function(x){return "<div>旧 "+esc(x.key)+"</div><div>"+(x.kind==="dir"?x.files+" 个文件，最新 "+(x.newest?fmtTime(x.newest,false):"-"):fmtSize(x.size)+"，"+fmtTime(x.mtime,false))+"</div>";}).join("")+"</div></div></div>");
+  h.push('<div class="panel"><h3>FR24 缓存</h3><div class="kv2"><div>目录</div><div>'+esc(ca.dir)+"</div><div>fr24_cache.db</div><div>"+(ca.db.exists?fmtSize(ca.db.size)+"，"+fmtTime(ca.db.mtime):"尚未创建")+"</div>"+(st?"<div>行数</div><div>"+st.rows+"</div><div>最后抓取</div><div>"+esc(st.last_fetch_fmt||"无")+"</div><div>目标</div><div>"+esc(JSON.stringify(st.targets_by_priority))+"</div><div>过期目标</div><div>"+st.stale_targets+"</div>":"")+"</div></div></div>");
   h.push('<p class="muted">时间按浏览器时区显示（'+tzLabel(new Date())+'）；运行文件夹名与报告内时间为 UTC。</p>');
   P.innerHTML=h.join("");bindRefresh();
   $$("[data-job]",P).forEach(function(b){b.onclick=function(){startJob(b.getAttribute("data-job"),JSON.parse(b.getAttribute("data-opts")||"{}"));};});
@@ -250,8 +249,8 @@ function upload(url,file,onProgress){return new Promise(function(resolve,reject)
  x.upload.onprogress=function(e){if(e.lengthComputable&&onProgress)onProgress(e.loaded/e.total);};
  x.onload=function(){var d;try{d=JSON.parse(x.responseText);}catch(e){d={error:x.responseText};}if(x.status>=200&&x.status<300)resolve(d);else{var er=new Error(d.error||("HTTP "+x.status));er.status=x.status;er.data=d;reject(er);}};
  x.onerror=function(){reject(new Error("网络错误"));};x.send(file);});}
-function newSeasonHtml(){return ('<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">新建航季</h2><p class="muted">在数据目录下新建航季文件夹，复制所选航季的 season.toml（还没有航季时用模板）；之后上传计划文件，并在配置页修改 [season] 的 name / 日期 / plan_files。</p><div class="row"><input type="text" id="nsname" placeholder="文件夹名，如 2027-1"><label>复制自 <select class="in" id="nsfrom">'+
-   S.seasons.map(function(s){return "<option"+(s.name===S.season?" selected":"")+">"+esc(s.name)+"</option>";}).join("")+'</select></label><button class="btn" id="nscreate">新建</button></div><div id="rns"></div></div>');}
+function newSeasonHtml(){return ('<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">新建航季</h2><p class="muted">在 $VCCA_HOME/seasons 下新建航季文件夹并写一个精简的 season.toml（只有 [season]；全站设置在 settings.toml），或复制所选航季的 season.toml；之后上传计划文件，并在配置页修改 [season] 的 name / 日期。</p><div class="row"><input type="text" id="nsname" placeholder="文件夹名，如 2027-1"><label>season.toml <select class="in" id="nsfrom"><option value="">新建（模板）</option>'+
+   S.seasons.map(function(s){return '<option value="'+esc(s.name)+'">复制自 '+esc(s.name)+"</option>";}).join("")+'</select></label><button class="btn" id="nscreate">新建</button></div><div id="rns"></div></div>');}
 function bindNewSeason(){
   $("#nscreate").onclick=function(){var n=$("#nsname").value.trim();if(!n){toast("填写文件夹名",true);return;}
    api("POST","api/seasons",{name:n,copy_from:$("#nsfrom").value}).then(function(r){$("#rns").innerHTML='<div class="msg ok">已新建 '+esc(r.season)+"。"+esc(r.next)+"</div>";
@@ -259,33 +258,49 @@ function bindNewSeason(){
    }).catch(function(e){$("#rns").innerHTML='<div class="msg err">'+esc(e.message)+"</div>";});};
 }
 function pageData(P,arg,tok){
- if(!S.season){P.innerHTML='<h1>数据</h1><div class="msg warn">数据目录下还没有航季（含 season.toml 的文件夹）。先新建一个。</div>'+newSeasonHtml();bindNewSeason();return;}
- api("GET","api/data?"+sq()).then(function(d){if(!alive(tok))return;var v=d.vamsys;
+ if(!S.season){P.innerHTML='<h1>数据</h1><div class="msg warn">$VCCA_HOME/seasons 下还没有航季。先新建一个。</div>'+newSeasonHtml();bindNewSeason();return;}
+ api("GET","api/data?"+sq()).then(function(d){if(!alive(tok))return;var v=d.vamsys,c=d.cache;
   var h=['<h1>数据 · '+esc(S.season)+"</h1>"];
   if(S.flash){h.push(S.flash);S.flash=null;}
-  if(d.busy)h.push('<div class="msg warn">有任务正在运行，完成后才能上传。</div>');
+  if(d.busy)h.push('<div class="msg warn">有任务正在运行，完成后才能上传或切换工作区。</div>');
+  var wsSel=v.workspaces.length?'<h3>工作区</h3><div class="row"><select class="in" id="wsel">'+v.workspaces.map(function(w){return '<option value="'+esc(w.id)+'"'+(w.id===(v.workspace_id&&v.workspaces.some(function(x){return x.id===v.workspace_id;})?v.workspace_id:v.selected)?" selected":"")+">"+esc(w.name)+" · 航线 "+w.routes+" · rev "+esc(w.revision)+"</option>";}).join("")+
+   '</select><button class="btn primary" id="wsave">保存到 settings.toml</button></div><p class="muted mono" id="wid"></p><div id="rws"></div>':"";
   h.push('<div class="cols2"><div class="panel"><h2 style="margin-top:0">VAMSYS 数据库</h2><div class="kv2"><div>文件</div><div class="mono">'+esc(v.path)+"</div><div>状态</div><div>"+(v.exists?fmtSize(v.size)+" · "+fmtTime(v.mtime):'<span class="tag bad">不存在</span>')+"</div>"+
-   (v.revision!=null?"<div>revision</div><div>"+v.revision+"（StorageRevision "+esc(v.storage_revision)+"）</div>":"")+"<div>工作区</div><div class=\"mono\">"+esc(v.workspace_id||"—")+"</div>"+(v.error?"<div>读取</div><div>"+esc(v.error)+"</div>":"")+"</div>"+
-   '<h3>上传新的 workspaces.db</h3><p class="muted">上传后先校验（SQLite、含配置的工作区、可读出航线），再把旧文件改名备份为 <span class="mono">workspaces.&lt;时间&gt;.db</span>（保留最近 5 份）并替换。上限 '+d.max_upload_mb+' MB。</p>'+
+   (v.revision!=null?"<div>revision</div><div>"+v.revision+"（StorageRevision "+esc(v.storage_revision)+"）</div>":"")+"<div>当前工作区</div><div class=\"mono\">"+(v.workspace_id?esc(v.workspace_id)+(v.workspace_source==="season"?' <span class="tag">航季覆盖</span>':""):'<span class="tag bad">未设置</span>')+"</div>"+(v.error?"<div>读取</div><div>"+esc(v.error)+"</div>":"")+"</div>"+wsSel+
+   '<h3>上传新的 workspaces.db</h3><p class="muted">上传后只保留本工具用到的三张表（workspaces、workspace_revisions、resource_rows；不保存 secrets 等其他内容）并压缩、校验，再把旧文件改名备份为 <span class="mono">workspaces.&lt;时间&gt;.db</span>（保留最近 5 份）并替换。上限 '+d.max_upload_mb+' MB。</p>'+
    '<div class="row"><input type="file" id="fdb" accept=".db,.sqlite,application/octet-stream"><button class="btn primary" id="updb">上传</button></div><div class="prog hidden" id="pdb"><div></div></div><div id="rdb"></div>'+
    (v.backups.length?"<h3>备份</h3><ul>"+v.backups.map(function(b){return '<li class="mono">'+esc(b.name)+' <span class="muted">'+fmtSize(b.size)+"</span></li>";}).join("")+"</ul>":"")+"</div>");
   h.push('<div class="panel"><h2 style="margin-top:0">CAAC 计划文件</h2><p class="muted mono">'+esc(d.season_dir)+'</p><div class="tbox"><table class="tbl"><thead><tr><th>文件</th><th>plan_files</th><th>大小</th><th>修改时间</th></tr></thead><tbody>'+
    d.plan_files.map(function(f){return '<tr><td class="wrap">'+esc(f.name)+"</td><td>"+(f.configured?'<span class="tag ok">已配置</span>':'<span class="tag">未配置</span>')+"</td><td>"+(f.exists?fmtSize(f.size):'<span class="tag bad">缺失</span>')+"</td><td>"+(f.exists?fmtTime(f.mtime,false):"")+"</td></tr>";}).join("")+"</tbody></table></div>"+
    '<h3>上传计划 .xls</h3><p class="muted">Excel 97-2003 格式（CAAC 的"（三字码）.xls"）。同名文件会先备份到 <span class="mono">.plan_history/</span>。</p><div class="row"><input type="file" id="fxls" accept=".xls,application/vnd.ms-excel"><label class="chk"><input type="checkbox" id="fadd" checked> 加入 season.toml 的 plan_files</label><button class="btn primary" id="upxls">上传</button></div><div class="prog hidden" id="pxls"><div></div></div><div id="rxls"></div></div></div>');
+  h.push('<div class="panel" style="margin-top:12px"><h2 style="margin-top:0">FR24 缓存</h2><div class="kv2"><div>文件</div><div class="mono">'+esc(c.path)+"</div><div>状态</div><div>"+(c.exists?fmtSize(c.size)+" · "+fmtTime(c.mtime):'<span class="tag">尚未创建（首次 fetch 时创建）</span>')+"</div></div>"+
+   '<h3>导入 fr24_cache.db</h3><p class="muted">用另一台机器上的缓存替换（例如迁移服务器）。会先检查是 fr24_cache.db 的结构，再把当前文件备份为 <span class="mono">fr24_cache.&lt;时间&gt;.db</span>（保留最近 3 份）并替换。</p>'+
+   '<div class="row"><input type="file" id="fcache" accept=".db,application/octet-stream"><button class="btn primary" id="upcache">导入</button></div><div class="prog hidden" id="pcache"><div></div></div><div id="rcache"></div>'+
+   (c.backups.length?"<h3>备份</h3><ul>"+c.backups.map(function(b){return '<li class="mono">'+esc(b.name)+' <span class="muted">'+fmtSize(b.size)+"</span></li>";}).join("")+"</ul>":"")+"</div>");
   h.push(newSeasonHtml());
   h.push('<p class="muted">上传或新建后，建议到 <a href="#/jobs">运行</a> 页执行 status 检查，再 build / run。</p>');
   P.innerHTML=h.join("");
+  var SKIP=["ok","next","config","backup","path","name","workspaces","selected","configured","needs_selection","dropped_tables"];
   function doUp(inp,btn,bar,res,url,name){$(btn).onclick=function(){var f=$(inp).files[0];if(!f){toast("先选择文件",true);return;}
    if(f.size>d.max_upload_mb*1048576){toast("文件超过上限",true);return;}
    if(!confirm("上传 "+f.name+"（"+fmtSize(f.size)+"）并替换"+name+"？"))return;
    $(btn).disabled=true;$(bar).classList.remove("hidden");$(res).innerHTML='<div class="muted"><span class="spinner"></span>上传并校验中…</div>';
    upload(url(),f,function(p){$(bar+">div").style.width=(p*100).toFixed(0)+"%";}).then(function(r){
-    $(res).innerHTML='<div class="msg ok">已更新'+(r.backup?"（旧文件备份为 "+esc(r.backup)+"）":"")+"<br>"+esc(Object.keys(r).filter(function(k){return ["ok","next","config","backup","path","name"].indexOf(k)<0;}).map(function(k){return k+": "+(Array.isArray(r[k])?r[k].join(","):r[k]);}).join(" · "))+
+    $(res).innerHTML='<div class="msg ok">已更新'+(r.backup?"（旧文件备份为 "+esc(r.backup)+"）":"")+"<br>"+esc(Object.keys(r).filter(function(k){return SKIP.indexOf(k)<0;}).map(function(k){return k+": "+(Array.isArray(r[k])?r[k].join(","):r[k]);}).join(" · "))+
+     (r.dropped_tables&&r.dropped_tables.length?"<br>未保存的表："+esc(r.dropped_tables.join(", ")):"")+
      (r.config&&r.config.ok===false?'</div><div class="msg warn">plan_files 未更新：'+errList(r.config.errors):"")+"<br><b>"+esc(r.next||"")+"</b></div>";
     toast("上传完成");S.flash=$(res).innerHTML;if(alive(tok))route(true);
    }).catch(function(e){$(btn).disabled=false;$(bar).classList.add("hidden");$(res).innerHTML='<div class="msg err">'+esc(e.message)+errList(e.data&&e.data.errors)+"</div>";});};}
   doUp("#fdb","#updb","#pdb","#rdb",function(){return "api/upload/vamsys?"+sq();}," VAMSYS 数据库");
   doUp("#fxls","#upxls","#pxls","#rxls",function(){return "api/upload/plan?"+sq({add:$("#fadd").checked?"1":""});},"/新增计划文件");
+  doUp("#fcache","#upcache","#pcache","#rcache",function(){return "api/upload/fr24cache?"+sq();}," FR24 缓存");
+  if($("#wsel")){var showId=function(){$("#wid").textContent=$("#wsel").value;};showId();$("#wsel").onchange=showId;
+   if(v.workspace_id!==$("#wsel").value)$("#rws").innerHTML='<div class="msg warn">'+(v.workspace_id?"当前配置的工作区不在数据库里。":"还没有选择工作区。")+"确认下拉框里的工作区后点保存。</div>";
+   $("#wsave").onclick=function(){if(d.busy){toast("有任务正在运行",true);return;}$("#wsave").disabled=true;
+    api("POST","api/vamsys/workspace",{season:S.season,workspace_id:$("#wsel").value}).then(function(r){
+     $("#rws").innerHTML='<div class="msg ok">'+(r.saved===false?"settings.toml 已经是这个工作区":"已写入 settings.toml [vamsys] workspace_id"+(r.backup?"（旧版本备份为 "+esc(r.backup)+"）":""))+"</div>"+(r.warnings&&r.warnings.length?'<div class="msg warn">'+errList(r.warnings)+"</div>":"");
+     toast("工作区已保存");S.flash=$("#rws").innerHTML;if(alive(tok))route(true);
+    }).catch(function(e){$("#wsave").disabled=false;$("#rws").innerHTML='<div class="msg err">'+esc(e.message)+errList(e.data&&e.data.errors)+"</div>";});};}
   bindNewSeason();
  }).catch(fail(P,tok));
 }
@@ -293,14 +308,14 @@ function pageData(P,arg,tok){
 /* ---------- config ---------- */
 function pageConfig(P,arg,tok){
  api("GET","api/config?"+sq()).then(function(d){if(!alive(tok))return;
-  var files=d.files,cur=files.filter(function(f){return f.key===S.cfgKey;})[0]||files[0];S.cfgKey=cur.key;
+  var files=d.files;if(S.cfgKey==="effective"){pageEffective(P,d);return;}
+  var cur=files.filter(function(f){return f.key===S.cfgKey;})[0]||files[0];S.cfgKey=cur.key;
   P.innerHTML='<h1>配置 · '+esc(S.season)+'</h1><div class="ftabs" id="ftabs"></div><div class="cfgwrap"><div><div class="row" style="margin-bottom:6px"><span class="mono muted" id="cpath" style="flex:1;overflow-wrap:anywhere"></span><span id="cdirty"></span></div>'+
    '<div class="editor"><pre class="gut" id="gut"></pre><textarea id="ced" spellcheck="false" wrap="off"></textarea></div>'+
    '<div class="row" style="margin-top:8px"><button class="btn" id="cval">仅校验</button><button class="btn primary" id="csave">保存 (Ctrl+S)</button><button class="btn" id="creload">放弃修改</button><span class="muted">保存 = 校验通过后备份旧版本再写入</span></div><div id="cres"></div></div>'+
    '<aside class="panel"><h3 style="margin-top:0">历史版本</h3><div id="chist"></div></aside></div>';
   if(d.busy)$("#cres").innerHTML='<div class="msg warn">有任务正在运行，暂时不能保存。</div>';
-  $("#ftabs").innerHTML=files.map(function(f){return '<button data-k="'+f.key+'"'+(f.key===cur.key?' class="on"':"")+">"+esc(f.label)+"</button>";}).join("");
-  $$("#ftabs button").forEach(function(b){b.onclick=function(){if(!confirmLeave())return;S.cfgKey=b.getAttribute("data-k");route(true);};});
+  cfgTabs(files,cur.key);
   var ed=$("#ced"),gut=$("#gut"),errLine=null;
   ed.value=cur.text;$("#cpath").textContent=cur.path;
   function setDirty(v){S.dirty=v;$("#cdirty").innerHTML=v?'<span class="dirty">● 未保存</span>':"";}
@@ -329,6 +344,24 @@ function pageConfig(P,arg,tok){
  }).catch(fail(P,tok));
 }
 
+function cfgTabs(files,key){
+ $("#ftabs").innerHTML=files.map(function(f){return '<button data-k="'+f.key+'"'+(f.key===key?' class="on"':"")+">"+esc(f.label)+"</button>";}).join("")+
+  '<button data-k="effective"'+(key==="effective"?' class="on"':"")+">生效值</button>";
+ $$("#ftabs button").forEach(function(b){b.onclick=function(){if(!confirmLeave())return;S.cfgKey=b.getAttribute("data-k");route(true);};});
+}
+function fmtVal(v){return typeof v==="string"?JSON.stringify(v):JSON.stringify(v).replace(/,/g,", ").replace(/:/g," = ");}
+function pageEffective(P,d){var e=d.effective||{rows:[],warnings:[]};
+ P.innerHTML='<h1>配置 · '+esc(S.season)+'</h1><div class="ftabs" id="ftabs"></div>'+
+  '<p class="muted">每个配置键最终生效的值和来源：<b>默认</b>（代码 DEFAULTS）→ <b>全站</b>（'+esc(e.settings_file||"settings.toml")+'）→ <b>航季</b>（'+esc(e.season_file||"season.toml")+'）。与默认值不同的行高亮。</p>'+
+  '<label class="chk"><input type="checkbox" id="effonly"> 只看与默认不同的</label>'+
+  (e.warnings&&e.warnings.length?'<div class="msg warn"><b>警告</b>'+errList(e.warnings)+"</div>":"")+
+  '<div class="tbox"><table class="tbl" id="efftbl"><thead><tr><th>节</th><th>键</th><th>生效值</th><th>来源</th><th>默认值</th></tr></thead><tbody>'+
+  e.rows.map(function(r){return '<tr class="'+(r.changed?"chg":"same")+'"'+(r.changed?' style="background:var(--chg)"':"")+'><td class="mono">['+esc(r.section)+']</td><td class="mono">'+esc(r.key)+'</td><td class="mono wrap">'+esc(fmtVal(r.value))+"</td><td>"+(r.source==="default"?'<span class="muted">默认</span>':'<span class="tag'+(r.source==="season"?" rv":" ok")+'">'+esc(r.source_label)+"</span>")+'</td><td class="mono wrap muted">'+esc(fmtVal(r.default))+"</td></tr>";}).join("")+
+  "</tbody></table></div>";
+ cfgTabs(d.files,"effective");
+ $("#effonly").onchange=function(){var only=this.checked;$$("#efftbl tr.same").forEach(function(tr){tr.style.display=only?"none":"";});};
+}
+
 /* ---------- help ---------- */
 function pageHelp(P){
  P.innerHTML='<div class="help"><h1>说明</h1><div class="cols2"><div class="panel"><h2 style="margin-top:0">日常流程</h2><ol>'+
@@ -340,7 +373,7 @@ function pageHelp(P){
   '<div class="panel"><h2 style="margin-top:0">FlightOpsDesk 导入顺序</h2><ol><li><code>01_airports_add_*.csv</code>（如有）</li><li><code>02_routes_retire_*.csv</code>（停用，写 End Date）</li><li><code>02b_routes_retire_deferred_*.csv</code>（暂缓停用，确认后再导）</li><li><code>03_routes_update_*.csv</code></li><li><code>04_routes_create_*.csv</code></li></ol>'+
   '<p><code>CHARTER</code>（临时加班/包机）、<code>POSITIONING</code>（调机/测试）、<code>WATCH_PLAN</code>（计划有但近期未飞）、<code>HOLD</code> 只出现在报告里，不进 CSV。</p>'+
   '<p>生效时间（停用 End Date / 新建 Start Date）默认是"运行当天的次日 00:00 北京时间"（UTC 16:00）。</p></div>'+
-  '<div class="panel"><h2 style="margin-top:0">换季</h2><ol><li><a href="#/data">数据</a> 页"新建航季"（复制上一季 season.toml）。</li><li>上传本季三份 CAAC <code>（三字码）.xls</code>。</li><li><a href="#/config">配置</a> 页改 <code>[season]</code> 的 name、日期（可删掉，自动取 FD23/FD24 众数）、plan_files；需要时改工作区、生效时间、Cost Index、阈值。</li><li>运行 status 检查无报错，再 run。新航季首次抓取约 30–40 分钟。</li></ol></div>'+
+  '<div class="panel"><h2 style="margin-top:0">换季</h2><ol><li><a href="#/data">数据</a> 页"新建航季"（精简模板，只有 [season]）。</li><li>上传本季三份 CAAC <code>（三字码）.xls</code>。</li><li><a href="#/config">配置</a> 页改本航季 <code>season.toml</code> 的 name、日期（可删掉，自动取 FD23/FD24 众数）；工作区、生效时间、Cost Index、阈值等全站设置在 <code>settings.toml</code>，"生效值"页可看每个键的最终值和来源。</li><li>运行 status 检查无报错，再 run。新航季首次抓取约 30–40 分钟。</li></ol></div>'+
   '<div class="panel"><h2 style="margin-top:0">提示</h2><ul><li>任务同一时间只能运行一个；运行中不能保存配置或上传数据。</li><li>中断 fetch 会保存进度，重新运行时已抓的不会重复。</li><li>配置保存前会完整校验，失败时文件保持不变；每次保存前的旧版本可在"历史版本"恢复。</li><li>时间：运行文件夹名与报告中的时刻均为 UTC；页面上的文件时间按浏览器时区显示并标注时区。</li></ul></div></div></div>';
 }
 

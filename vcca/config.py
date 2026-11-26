@@ -1,15 +1,28 @@
-"""Season configuration: season.toml + rules/*.toml -> frozen ``Config``.
+"""Configuration: ``$VCCA_HOME`` layout, settings.toml (site) + season.toml (season) + rules/*.toml -> frozen ``Config``.
+
+Data directory (the ONLY path setting; environment variable ``VCCA_HOME``, default ``/srv/vcca``)::
+
+    $VCCA_HOME/
+      settings.toml                 site-wide settings: [vamsys] [operators] [airports] [export] [fetch] [thresholds]
+      seasons/<season>/             season.toml (optional) + CAAC .xls + output/<run>/
+      vamsys/workspaces.db          VAMSYS workspace DB (uploaded from the web data page; backups workspaces.<t>.db)
+      rules/airport_grades.toml, rules/fleets.toml
+      cache/fr24_cache.db           FR24 store
+      state/                        web users, sessions, jobs, temp files, fr24_session.json
+
+Merge order (per key): code ``DEFAULTS`` -> settings.toml -> season.toml. season.toml holds ``[season]`` (name,
+start/end date, plan_files, plan_groups, plan_tz_offset_min) plus optional overrides of the site sections.
 
 Usage::
 
     from vcca.config import load_config
-    cfg = load_config()                 # latest season folder under F:\\vCCA\\plan containing season.toml
+    cfg = load_config()                 # latest season under $VCCA_HOME/seasons
     cfg = load_config("2026-27-1")      # by folder name (or absolute path)
     cfg.thresholds.bank_merge           # ((45, 60), (20, 75), (65, 20))
     cfg.airport_rules.route_min_grade("ZBAA", "ZUBD")
-    cfg.fleet_rules.map_ac_to_fleet("CCA", "B738")
     cfg.effective_time()                # '2026-11-25 16:00:00' (next BJT midnight, UTC)
     cfg.new_run_dir()                   # <season>/output/2026-11-25_1530/ (not created)
+    effective_values("2026-27-1")       # every effective key with its value and source (default/site/season)
 
 Every key has a default in ``DEFAULTS`` (rules files: built-in defaults are empty -> missing rules file is an error).
 Validation collects ALL problems and raises one ``ConfigError`` listing them.
@@ -20,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import datetime as _dt
+import json
 import os
 import re
 import sys
@@ -33,40 +47,93 @@ from typing import Any, Iterable, Mapping
 from . import util_time as ut
 
 # ------------------------------------------------------------------ fixed layout -------------------------------------
-WORK_DIR = Path(__file__).resolve().parent.parent          # F:\vCCA\plan\fr24_work
+WORK_DIR = Path(__file__).resolve().parent.parent          # code checkout (server: /opt/vcca/app)
+HOME_ENV = "VCCA_HOME"
+DEFAULT_HOME = "/srv/vcca"
+SETTINGS_FILE = "settings.toml"
+SETTINGS_HISTORY_SUBDIR = ".config_history"
+VAMSYS_DB_NAME = "workspaces.db"
+CACHE_DB_NAME = "fr24_cache.db"
 
 
-def _env_dir(name: str, default: Path) -> Path:
-    """Directory from environment variable ``name`` (read at call time), else ``default``."""
-    v = os.environ.get(name, "").strip()
-    return Path(v).expanduser().resolve() if v else default
+@dataclass(frozen=True)
+class Layout:
+    """Fixed sub-paths of one data directory (``$VCCA_HOME``)."""
+    home: Path
+
+    @property
+    def settings(self) -> Path:
+        return self.home / SETTINGS_FILE
+
+    @property
+    def settings_history(self) -> Path:
+        return self.home / SETTINGS_HISTORY_SUBDIR
+
+    @property
+    def seasons(self) -> Path:
+        return self.home / "seasons"
+
+    @property
+    def rules(self) -> Path:
+        return self.home / "rules"
+
+    @property
+    def cache(self) -> Path:
+        return self.home / "cache"
+
+    @property
+    def state(self) -> Path:
+        return self.home / "state"
+
+    @property
+    def vamsys_dir(self) -> Path:
+        return self.home / "vamsys"
+
+    @property
+    def vamsys_db(self) -> Path:
+        return self.vamsys_dir / VAMSYS_DB_NAME
 
 
-# Environment overrides (code and data can live apart, e.g. /opt/vcca + /srv/vcca on a server). The functions read
-# the environment at call time; the constants below are the values at import time (kept for compatibility).
-def plan_root() -> Path:
-    """Folder holding the season folders: $VCCA_PLAN_ROOT, default the parent of fr24_work."""
-    return _env_dir("VCCA_PLAN_ROOT", WORK_DIR.parent)
+def vcca_home() -> Path:
+    """$VCCA_HOME (read at call time), default /srv/vcca. Raises ConfigError when the directory does not exist."""
+    v = os.environ.get(HOME_ENV, "").strip()
+    p = Path(v).expanduser().resolve() if v else Path(DEFAULT_HOME)
+    if not p.is_dir():
+        how = f"环境变量 {HOME_ENV}={v}" if v else f"环境变量 {HOME_ENV} 未设置，使用默认 {DEFAULT_HOME}"
+        raise ConfigError(f"数据目录不存在: {p}（{how}）。请创建该目录，或把 {HOME_ENV} 指向数据目录"
+                          f"（开发时可指向一个本地开发数据目录）。")
+    return p
+
+
+def layout(home: str | Path | None = None) -> Layout:
+    return Layout(Path(home).resolve() if home else vcca_home())
+
+
+def seasons_dir() -> Path:
+    return layout().seasons
 
 
 def rules_dir() -> Path:
-    """$VCCA_RULES_DIR, default fr24_work/rules."""
-    return _env_dir("VCCA_RULES_DIR", WORK_DIR / "rules")
-
-
-def default_cache_dir() -> Path:
-    """$VCCA_CACHE_DIR, default fr24_work/fr24_cache (the env var also wins over [fetch] cache_dir)."""
-    return _env_dir("VCCA_CACHE_DIR", WORK_DIR / "fr24_cache")
+    return layout().rules
 
 
 def state_dir() -> Path:
-    """Web app state (users, sessions, jobs, upload temp files): $VCCA_STATE_DIR, default fr24_work/webstate."""
-    return _env_dir("VCCA_STATE_DIR", WORK_DIR / "webstate")
+    """Web app state (users, sessions, jobs, upload temp files, FR24 session cache): $VCCA_HOME/state."""
+    return layout().state
 
 
-PLAN_ROOT = plan_root()                                     # F:\vCCA\plan
-RULES_DIR = rules_dir()
-DEFAULT_CACHE_DIR = default_cache_dir()
+def settings_path() -> Path:
+    return layout().settings
+
+
+def vamsys_db_path() -> Path:
+    return layout().vamsys_db
+
+
+def fr24_cache_dir() -> Path:
+    return layout().cache
+
+
 FLIGHTRADARAPI_DIR = WORK_DIR / "FlightRadarAPI" / "python"
 SEASON_FILE = "season.toml"
 OUTPUT_SUBDIR = "output"
@@ -97,8 +164,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "plan_groups": [],                # default: derived from file names (国内/国际/港澳)
         "plan_tz_offset_min": 480,
     },
-    "vamsys": {
-        "db_path": "../Data/workspaces.db",
+    "vamsys": {                           # the DB itself is always $VCCA_HOME/vamsys/workspaces.db
         "workspace_id": "",
         "collection": 1,
     },
@@ -122,10 +188,17 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "deep_scan_every_days": 7,
         "reg_drop_after_days": 30,
         "max_consecutive_failures": 8,
-        "cache_dir": "",                  # default: fr24_work/fr24_cache
-    },
+    },                                    # the cache itself is always $VCCA_HOME/cache/fr24_cache.db
     "thresholds": {},                     # see Thresholds dataclass defaults
 }
+SEASON_SECTION = "season"                 # only in season.toml
+SITE_SECTIONS = ("vamsys", "operators", "airports", "export", "fetch", "thresholds")
+#: keys of older config files that are no longer settings (warned about and ignored)
+REMOVED_KEYS: dict[str, dict[str, str]] = {
+    "vamsys": {"db_path": "VAMSYS 数据库固定为 $VCCA_HOME/vamsys/workspaces.db，请在网页数据页上传"},
+    "fetch": {"cache_dir": "FR24 缓存固定为 $VCCA_HOME/cache/fr24_cache.db"},
+}
+SOURCE_LABELS = {"default": "默认", "site": "全站", "season": "航季"}
 
 
 Pair = tuple[int, int]
@@ -303,12 +376,16 @@ class Config:
     cache_dir: Path
     output_root: Path
     warnings: tuple[str, ...] = ()
-    raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False)          # season.toml as read
+    home: Path | None = None                                                   # $VCCA_HOME
+    settings_file: Path | None = None                                          # $VCCA_HOME/settings.toml
+    site_raw: Mapping[str, Any] = field(default_factory=dict, repr=False)     # settings.toml as read
+    sources: Mapping[str, str] = field(default_factory=dict, repr=False)      # 'sect.key' -> 'site'|'season'
 
     # ---- derived paths
     @property
     def cache_db(self) -> Path:
-        return self.cache_dir / "fr24_cache.db"
+        return self.cache_dir / CACHE_DB_NAME
 
     @property
     def season_start_ts(self) -> int:
@@ -387,35 +464,42 @@ class Config:
 
 
 # ------------------------------------------------------------------ loading ------------------------------------------
-def discover_seasons(plan_root: Path | None = None) -> list[Path]:
-    """Season folders (direct children of plan_root containing season.toml), oldest first.
-    Order: season.start_date from the toml when present, else folder name."""
-    plan_root = Path(plan_root) if plan_root else globals()["plan_root"]()
+def is_season_dir(p: Path) -> bool:
+    """A season folder has a season.toml or at least one of the standard CAAC plan files."""
+    return p.is_dir() and ((p / SEASON_FILE).is_file()
+                           or any((p / f).is_file() for f in DEFAULTS["season"]["plan_files"]))
+
+
+def discover_seasons(root: Path | None = None) -> list[Path]:
+    """Season folders under ``root`` (default $VCCA_HOME/seasons), oldest first.
+    Order: [season] start_date from season.toml when present, else the folder name."""
+    root = Path(root) if root else seasons_dir()
     out = []
-    for p in plan_root.iterdir() if plan_root.is_dir() else []:
-        f = p / SEASON_FILE
-        if p.is_dir() and f.is_file():
-            sd = ""
-            try:
-                sd = str(tomllib.loads(f.read_text(encoding="utf-8")).get("season", {}).get("start_date") or "")
-            except (tomllib.TOMLDecodeError, OSError):
-                pass
-            out.append((sd, p.name, p))
+    for p in root.iterdir() if root.is_dir() else []:
+        if not is_season_dir(p):
+            continue
+        sd = ""
+        try:
+            sd = str(tomllib.loads((p / SEASON_FILE).read_text(encoding="utf-8")).get("season", {})
+                     .get("start_date") or "")
+        except (tomllib.TOMLDecodeError, OSError):
+            pass
+        out.append((sd, p.name, p))
     return [p for _, _, p in sorted(out)]
 
 
-def resolve_season_dir(season: str | Path | None = None, plan_root: Path | None = None) -> Path:
-    plan_root = Path(plan_root) if plan_root else globals()["plan_root"]()
+def resolve_season_dir(season: str | Path | None = None, root: Path | None = None) -> Path:
+    root = Path(root) if root else seasons_dir()
     if season:
         p = Path(season)
         if not p.is_absolute():
-            p = plan_root / p
-        if not (p / SEASON_FILE).is_file():
-            raise ConfigError(f"航季文件夹 {p} 中没有 {SEASON_FILE}")
+            p = root / p
+        if not is_season_dir(p):
+            raise ConfigError(f"航季文件夹 {p} 不存在，或其中既没有 {SEASON_FILE} 也没有 CAAC 计划文件")
         return p
-    seasons = discover_seasons(plan_root)
+    seasons = discover_seasons(root)
     if not seasons:
-        raise ConfigError(f"{plan_root} 下没有包含 {SEASON_FILE} 的航季文件夹")
+        raise ConfigError(f"{root} 下没有航季文件夹（含 {SEASON_FILE} 或 CAAC 计划 .xls 的文件夹）")
     return seasons[-1]
 
 
@@ -443,6 +527,14 @@ def _read_toml(path: Path) -> dict:
         raise ConfigError(f"文件不存在: {path}") from None
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"TOML 语法错误: {e}", path) from None
+
+
+def _read_toml_optional(path: Path) -> dict:
+    """Like ``_read_toml`` but a missing file (without an unsaved override) is an empty table."""
+    over = _TEXT_OVERRIDES.get()
+    if not (over and str(Path(path).resolve()) in over) and not Path(path).is_file():
+        return {}
+    return _read_toml(path)
 
 
 def load_airport_rules(path: Path | None = None) -> AirportRules:
@@ -518,26 +610,96 @@ def load_fleet_rules(path: Path | None = None) -> FleetRules:
     )
 
 
-def _merge(defaults: dict, user: dict) -> tuple[dict, list[str]]:
-    """Shallow-per-section merge; returns (merged, warnings for unknown keys)."""
-    warns = []
-    out = {}
-    for sect, dv in defaults.items():
-        uv = user.get(sect, {})
-        if not isinstance(uv, dict):
-            warns.append(f"[{sect}] 应为表(table)，已忽略")
-            uv = {}
-        merged = dict(dv)
-        merged.update(uv)
-        if sect != "thresholds":
-            for k in uv:
-                if k not in dv:
-                    warns.append(f"[{sect}] 未知键 {k!r}（已忽略）")
-        out[sect] = merged
-    for sect in user:
-        if sect not in defaults:
-            warns.append(f"未知配置节 [{sect}]（已忽略）")
-    return out, warns
+def _plain(v: Any) -> Any:
+    """Tuples -> lists (recursively) so dataclass defaults compare with TOML values."""
+    if isinstance(v, (tuple, list)):
+        return [_plain(x) for x in v]
+    if isinstance(v, Mapping):
+        return {k: _plain(x) for k, x in v.items()}
+    return v
+
+
+def default_values() -> dict[str, dict[str, Any]]:
+    """Every configurable key with its code default ([thresholds] from the ``Thresholds`` dataclass)."""
+    out = {s: {k: _plain(v) for k, v in d.items()} for s, d in DEFAULTS.items()}
+    out["thresholds"] = {k: _plain(v) for k, v in Thresholds().as_dict().items()}
+    return out
+
+
+def _clean_layer(user: dict, where: str, *, allow_season: bool, warns: list[str]) -> dict[str, dict]:
+    """Keep known sections/keys of one TOML file; everything else becomes a warning."""
+    out: dict[str, dict] = {}
+    for sect, val in user.items():
+        if sect == SEASON_SECTION and not allow_season:
+            warns.append(f"{where}: [season] 只能写在航季的 {SEASON_FILE} 中（已忽略）")
+            continue
+        if sect not in DEFAULTS:
+            warns.append(f"{where}: 未知配置节 [{sect}]（已忽略）")
+            continue
+        if not isinstance(val, dict):
+            warns.append(f"{where}: [{sect}] 应为表(table)，已忽略")
+            continue
+        kept = {}
+        for k, v in val.items():
+            if k in REMOVED_KEYS.get(sect, {}):
+                warns.append(f"{where}: [{sect}] {k} 已不再使用（{REMOVED_KEYS[sect][k]}），已忽略")
+            elif sect != "thresholds" and k not in DEFAULTS[sect]:
+                warns.append(f"{where}: [{sect}] 未知键 {k!r}（已忽略）")
+            else:
+                kept[k] = v
+        out[sect] = kept
+    return out
+
+
+def _layers(site_raw: dict, season_raw: dict, warns: list[str]) -> tuple[dict[str, dict], dict[str, str]]:
+    """DEFAULTS -> settings.toml -> season.toml, per key. Returns (merged data, {'sect.key': 'site'|'season'})."""
+    data = {s: dict(v) for s, v in DEFAULTS.items()}
+    sources: dict[str, str] = {}
+    for src, raw, where, allow in (("site", site_raw, SETTINGS_FILE, False), ("season", season_raw, SEASON_FILE, True)):
+        for sect, kv in _clean_layer(raw, where, allow_season=allow, warns=warns).items():
+            for k, v in kv.items():
+                data[sect][k] = v
+                sources[f"{sect}.{k}"] = src
+    return data, sources
+
+
+def effective_values(season: str | Path | None = None, *, home: str | Path | None = None) -> dict[str, Any]:
+    """Every effective key: ``{'rows': [{section, key, value, default, source, source_label, changed}], 'warnings',
+    'settings_file', 'season_file'}``. Works without validation (also when the config has errors); unsaved editor
+    text is honoured via ``text_overrides``. ``season=None`` and no season at all -> site layer only."""
+    lay = layout(home)
+    sdir = None
+    try:
+        sdir = resolve_season_dir(season, lay.seasons)
+    except ConfigError:
+        if season:
+            raise
+    warns: list[str] = []
+    site_raw = _read_toml_optional(lay.settings)
+    season_raw = _read_toml_optional(sdir / SEASON_FILE) if sdir else {}
+    data, sources = _layers(site_raw, season_raw, warns)
+    defaults = default_values()
+    rows = []
+    for sect, dflt in defaults.items():
+        if sect == SEASON_SECTION and sdir is None:
+            continue
+        for k, dv in dflt.items():
+            v = _plain(data[sect].get(k, dv))
+            src = sources.get(f"{sect}.{k}", "default")
+            rows.append({"section": sect, "key": k, "value": v, "default": dv, "source": src,
+                         "source_label": SOURCE_LABELS[src], "changed": not _same(v, dv)})
+    return {"rows": rows, "warnings": warns, "settings_file": str(lay.settings),
+            "season_file": str(sdir / SEASON_FILE) if sdir else None, "season": sdir.name if sdir else None}
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Value equality across TOML / default types (0.1 == 0.10, [[1, 2]] == ((1, 2),), date == 'YYYY-MM-DD')."""
+    a, b = _plain(a), _plain(b)
+    if isinstance(a, (_dt.date, _dt.datetime)) or isinstance(b, (_dt.date, _dt.datetime)):
+        return str(a) == str(b)
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    return a == b
 
 
 def _parse_date(s: str, what: str, errs: list[str]) -> _dt.date | None:
@@ -608,19 +770,20 @@ def _default_group_label(fname: str) -> str:
 
 
 def load_config(season: str | Path | None = None, *, strict: bool = True, derive_dates: bool = True,
-                rules_dir: Path | None = None, plan_root: Path | None = None) -> Config:
-    """Load and validate the season configuration.
+                home: str | Path | None = None) -> Config:
+    """Load and validate the configuration of one season (DEFAULTS -> settings.toml -> season.toml + rules).
 
     strict=True: missing plan files / VAMSYS DB are errors. strict=False: they become warnings (``status``).
     derive_dates: when start/end are not configured, read the plan files to take mode(FD23)/mode(FD24).
-    rules_dir / plan_root default to ``rules_dir()`` / ``plan_root()`` (environment overrides).
+    home: data directory (default ``$VCCA_HOME``).
     """
-    rules_dir = Path(rules_dir) if rules_dir else globals()["rules_dir"]()
-    plan_root = Path(plan_root) if plan_root else globals()["plan_root"]()
-    season_dir = resolve_season_dir(season, plan_root)
+    lay = layout(home)
+    season_dir = resolve_season_dir(season, lay.seasons)
     season_file = season_dir / SEASON_FILE
-    user = _read_toml(season_file)
-    data, warns = _merge(DEFAULTS, user)
+    site_raw = _read_toml_optional(lay.settings)
+    user = _read_toml_optional(season_file)
+    warns: list[str] = []
+    data, sources = _layers(site_raw, user, warns)
     errs: list[str] = []
 
     s, v, o, a, ex, fe = (data[k] for k in ("season", "vamsys", "operators", "airports", "export", "fetch"))
@@ -685,12 +848,12 @@ def load_config(season: str | Path | None = None, *, strict: bool = True, derive
         errs.append(f"[season] start_date {start} 必须早于 end_date {end}")
 
     # vamsys
-    db = Path(v["db_path"])
-    if not db.is_absolute():
-        db = (plan_root / db).resolve()
+    db = lay.vamsys_db
     if not db.is_file():
-        (errs if strict else warns).append(f"VAMSYS 数据库不存在: {db}")
-    if not re.fullmatch(r"[0-9a-f-]{36}", str(v["workspace_id"])):
+        (errs if strict else warns).append(f"VAMSYS 数据库不存在: {db}（请在网页数据页上传 workspaces.db）")
+    if not str(v["workspace_id"]).strip():
+        errs.append("[vamsys] workspace_id 未设置：请在数据页上传 workspaces.db 并选择工作区")
+    elif not re.fullmatch(r"[0-9a-f-]{36}", str(v["workspace_id"])):
         errs.append(f"[vamsys] workspace_id = {v['workspace_id']!r} 不是合法 UUID")
     if not isinstance(v["collection"], int):
         errs.append("[vamsys] collection 应为整数")
@@ -726,23 +889,17 @@ def load_config(season: str | Path | None = None, *, strict: bool = True, derive
         else:
             fkw[f.name] = float(val) if f.type in ("float", float) else int(val)
     fetch = FetchSettings(**fkw)
-    if os.environ.get("VCCA_CACHE_DIR", "").strip():
-        cache_dir = default_cache_dir()
-    else:
-        cache_dir = Path(fe["cache_dir"]) if fe["cache_dir"] else default_cache_dir()
-    if not cache_dir.is_absolute():
-        cache_dir = (WORK_DIR / cache_dir).resolve()
 
-    thresholds = _build_thresholds(dict(user.get("thresholds", {})), errs, warns)
+    thresholds = _build_thresholds(dict(data["thresholds"]), errs, warns)
 
     # rules
     try:
-        airport_rules = load_airport_rules(rules_dir / "airport_grades.toml")
+        airport_rules = load_airport_rules(lay.rules / "airport_grades.toml")
     except ConfigError as e:
         errs.extend(e.errors)
         airport_rules = None
     try:
-        fleet_rules = load_fleet_rules(rules_dir / "fleets.toml")
+        fleet_rules = load_fleet_rules(lay.rules / "fleets.toml")
     except ConfigError as e:
         errs.extend(e.errors)
         fleet_rules = None
@@ -752,7 +909,7 @@ def load_config(season: str | Path | None = None, *, strict: bool = True, derive
                 warns.append(f"fleets.toml [fixed_fleets] 未定义 {op}（将按 CCA 规则选机队）")
 
     if errs:
-        raise ConfigError(errs, season_file)
+        raise ConfigError(errs, season_file if season_file.is_file() else season_dir)
 
     return Config(
         season_name=season_dir.name,
@@ -779,16 +936,116 @@ def load_config(season: str | Path | None = None, *, strict: bool = True, derive
         thresholds=thresholds,
         airport_rules=airport_rules,
         fleet_rules=fleet_rules,
-        cache_dir=cache_dir,
+        cache_dir=lay.cache,
         output_root=season_dir / OUTPUT_SUBDIR,
         warnings=tuple(warns),
         raw=MappingProxyType(user),
+        home=lay.home,
+        settings_file=lay.settings,
+        site_raw=MappingProxyType(site_raw),
+        sources=MappingProxyType(sources),
     )
+
+
+# ------------------------------------------------------------------ migration (old season.toml -> new layout) --------
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _toml_key(k: str) -> str:
+    return k if _BARE_KEY.fullmatch(k) else json.dumps(k, ensure_ascii=False)
+
+
+def toml_value(v: Any) -> str:
+    """One TOML value (str/bool/int/float/date/list/dict -> inline table). JSON string escapes are valid TOML."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, (_dt.date, _dt.datetime)):
+        return json.dumps(str(v))
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(toml_value(x) for x in v) + "]"
+    if isinstance(v, Mapping):
+        return "{ " + ", ".join(f"{_toml_key(str(k))} = {toml_value(x)}" for k, x in v.items()) + " }" if v else "{}"
+    raise TypeError(f"cannot write {type(v).__name__} as TOML")
+
+
+def dump_toml(sections: Mapping[str, Mapping[str, Any]], header: str = "") -> str:
+    """``{section: {key: value}}`` -> TOML text (empty sections are left out)."""
+    out = [header.rstrip("\n") + "\n"] if header else []
+    for sect, kv in sections.items():
+        if not kv:
+            continue
+        out.append(f"\n[{sect}]\n" if out else f"[{sect}]\n")
+        w = max(len(_toml_key(k)) for k in kv)
+        out += [f"{_toml_key(k):<{w}} = {toml_value(v)}\n" for k, v in kv.items()]
+    return "".join(out)
+
+
+@dataclass
+class Migration:
+    season_name: str
+    settings: dict[str, dict[str, Any]]        # changed site keys
+    season: dict[str, dict[str, Any]]          # [season] keys worth keeping
+    dropped: list[str]                         # 'sect.key' equal to the default (or no longer a setting)
+    settings_text: str = ""
+    season_text: str = ""
+
+
+def migrate_config(old_file: str | Path, season_name: str | None = None) -> Migration:
+    """Split an old all-in-one season.toml into a slim settings.toml (site keys that differ from the code defaults)
+    and a slim season.toml (the [season] keys that are not defaults). Keys equal to the defaults are dropped;
+    ``[vamsys] db_path`` and ``[fetch] cache_dir`` are no longer settings."""
+    old_file = Path(old_file)
+    raw = _read_toml(old_file)
+    name = season_name or old_file.parent.name
+    defaults = default_values()
+    settings: dict[str, dict[str, Any]] = {}
+    season: dict[str, dict[str, Any]] = {}
+    dropped: list[str] = []
+    for sect, kv in raw.items():
+        if not isinstance(kv, dict) or sect not in defaults:
+            dropped.append(f"[{sect}]（未知配置节）")
+            continue
+        for k, v in kv.items():
+            label = f"{sect}.{k}"
+            if k in REMOVED_KEYS.get(sect, {}):
+                dropped.append(f"{label}（不再是配置项）")
+                continue
+            if k not in defaults[sect]:
+                dropped.append(f"{label}（未知键）")
+                continue
+            dv = defaults[sect][k]
+            if sect == SEASON_SECTION:
+                keep = bool(v) if k in ("name", "start_date", "end_date") else not _same(v, dv)
+                if k == "plan_groups" and v:
+                    files = raw[sect].get("plan_files", defaults[sect]["plan_files"])
+                    keep = not _same(v, [_default_group_label(f) for f in files])
+                if keep:
+                    season.setdefault(sect, {})[k] = v
+                else:
+                    dropped.append(f"{label}（= 默认）")
+            elif _same(v, dv):
+                dropped.append(f"{label}（= 默认）")
+            else:
+                settings.setdefault(sect, {})[k] = v
+    order = {s: i for i, s in enumerate(DEFAULTS)}
+    settings = dict(sorted(settings.items(), key=lambda kv: order[kv[0]]))
+    m = Migration(season_name=name, settings=settings, season=season, dropped=dropped)
+    stamp = _dt.datetime.now(ut.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    m.settings_text = dump_toml(settings, f"# vCCA 全站设置（{stamp} 由 migrate-config 从 {old_file.name} 生成）。\n"
+                                          "# 只写与代码默认值（vcca/config.py DEFAULTS / Thresholds）不同的键；"
+                                          "航季可在 season.toml 里覆盖。")
+    m.season_text = dump_toml(season, f"# vCCA 航季 {name}（{stamp} 由 migrate-config 生成）。只写本航季的设置；"
+                                      "全站设置见 $VCCA_HOME/settings.toml。")
+    return m
 
 
 # ------------------------------------------------------------------ environment helpers ------------------------------
 def ensure_flightradarapi_on_path() -> Path:
-    """Insert fr24_work/FlightRadarAPI/python at the front of sys.path (the venv .pth is stale). Idempotent."""
+    """Insert <code dir>/FlightRadarAPI/python at the front of sys.path (vendored, not pip-installed). Idempotent."""
     p = str(FLIGHTRADARAPI_DIR)
     if not FLIGHTRADARAPI_DIR.is_dir():
         raise ConfigError(f"FlightRadarAPI 库不存在: {FLIGHTRADARAPI_DIR}")

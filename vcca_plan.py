@@ -226,13 +226,36 @@ def cmd_web_user(args) -> int:
     return 0
 
 
+def cmd_migrate_config(args) -> int:
+    """Old all-in-one season.toml -> slim $VCCA_HOME/settings.toml + seasons/<name>/season.toml."""
+    m = C.migrate_config(args.from_file, args.name)
+    print(f"# ===== settings.toml =====\n{m.settings_text}")
+    print(f"# ===== seasons/{m.season_name}/season.toml =====\n{m.season_text}")
+    print(f"# 已省略（等于默认值或不再是配置项）: {', '.join(m.dropped) or '无'}")
+    if not args.write:
+        print("\n（预览；加 --write 写入 $VCCA_HOME）")
+        return 0
+    lay = C.layout()
+    targets = [(lay.settings, m.settings_text), (lay.seasons / m.season_name / C.SEASON_FILE, m.season_text)]
+    exists = [str(f) for f, _ in targets if f.exists()]
+    if exists and not args.force:
+        print(f"\n已存在，未写入（确认覆盖请加 --force）: {', '.join(exists)}")
+        return 1
+    for f, text in targets:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text, encoding="utf-8")
+        print(f"已写入 {f}")
+    return 0
+
+
 COMMANDS = {"status": cmd_status, "fetch": cmd_fetch, "build": cmd_build, "export": cmd_export,
-            "run": cmd_run, "test": cmd_test, "serve": cmd_serve, "web-user": cmd_web_user}
+            "run": cmd_run, "test": cmd_test, "serve": cmd_serve, "web-user": cmd_web_user,
+            "migrate-config": cmd_migrate_config}
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="vcca_plan.py", description="vCCA 航季航班计划工具（CAAC 计划 + FR24 vs VAMSYS）")
-    p.add_argument("--season", help="航季文件夹名或路径（默认：最新含 season.toml 的文件夹）")
+    p.add_argument("--season", help="航季文件夹名或路径（默认：$VCCA_HOME/seasons 下最新的航季）")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("status", help="配置、文件、账号、缓存覆盖率与新鲜度")
     f = sub.add_parser("fetch", help="增量抓取 FR24")
@@ -254,6 +277,11 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("web-user", help="网页前端账号：set <名字>（创建/改密码）、list、delete <名字>")
     w.add_argument("action", choices=["set", "list", "delete"])
     w.add_argument("name", nargs="?")
+    mc = sub.add_parser("migrate-config", help="旧 season.toml → 精简的 settings.toml + seasons/<名>/season.toml")
+    mc.add_argument("--from", dest="from_file", required=True, help="旧的 season.toml")
+    mc.add_argument("--name", help="航季文件夹名（默认：旧文件所在文件夹名）")
+    mc.add_argument("--write", action="store_true", help="写入 $VCCA_HOME（默认只预览）")
+    mc.add_argument("--force", action="store_true", help="覆盖已存在的文件")
     return p
 
 

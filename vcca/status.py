@@ -45,6 +45,8 @@ def collect_status(season: str | Path | None = None) -> dict[str, Any]:
     out["season"] = cfg.season_name
     out["config"] = {
         "season_label": cfg.season_label, "season_name": cfg.season_name, "season_file": str(cfg.season_file),
+        "season_file_exists": cfg.season_file.is_file(), "settings_file": str(cfg.settings_file),
+        "settings_file_exists": bool(cfg.settings_file and cfg.settings_file.is_file()), "home": str(cfg.home),
         "start_date": cfg.start_date.isoformat(), "end_date": cfg.end_date.isoformat(),
         "dates_source": cfg.dates_source, "plan_tz_offset_min": cfg.plan_tz_offset_min,
         "target_ops": list(cfg.target_ops), "cargo_ops": list(cfg.cargo_ops),
@@ -136,7 +138,10 @@ def print_status(d: dict[str, Any], print=print) -> int:  # noqa: A002 - injecta
         print(d["error"])
         return 1
     c = d["config"]
-    print(f"航季        {c['season_label']}  [{c['season_name']}]  {c['season_file']}")
+    print(f"数据目录    {c['home']}")
+    print(f"全站设置    {c['settings_file']}" + ("" if c["settings_file_exists"] else "  (不存在，全部用默认值)"))
+    print(f"航季        {c['season_label']}  [{c['season_name']}]  {c['season_file']}"
+          + ("" if c["season_file_exists"] else "  (无 season.toml，用默认值)"))
     print(f"起止        {c['start_date']} ~ {c['end_date']}  ({'配置' if c['dates_source'] == 'config' else '由FD23/FD24推导'})"
           f"  计划时区 UTC{c['plan_tz_offset_min'] / 60:+g}")
     print(f"航司        {','.join(c['target_ops'])}  (货运 {','.join(c['cargo_ops'])})")

@@ -11,7 +11,7 @@ Categories whose ``models.CSV_FILE`` entry is None (CHARTER / POSITIONING / WATC
 category added later without a CSV mapping) are report-only and never exported.
 Retire decisions are skipped when VAMSYS already has an End Date (no change; reconcile's ALREADY_RETIRING).
 
-Format (matches F:\\vCCA\\plan\\2026-27-1\\flightopsdesk_csv\\*.csv byte-for-byte in style): UTF-8 without BOM,
+Format (matches the historical <season>/flightopsdesk_csv/*.csv byte-for-byte in style): UTF-8 without BOM,
 ',' separator, csv.QUOTE_MINIMAL (so only multi-value Fleet IDs / Service Days are quoted), CRLF line endings
 (also after the last row), booleans 'TRUE'/'FALSE', '_delete' always 'FALSE', Fleet IDs sorted ascending joined by
 ',', Service Days per util_time.days_to_vdays, times 'HH:MM', dates 'YYYY-MM-DD HH:MM:SS'.
