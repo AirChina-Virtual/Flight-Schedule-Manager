@@ -4,7 +4,7 @@
 通过域名 + HTTPS（nginx + certbot）访问。全新安装只需要三样东西：**域名**、**FR24 账号**、**网页登录密码**。
 
 - 独立域名：第 1–6 节。
-- 挂在 DMIT 测试站 `https://genshin.fastcdn.world:8443/plan/` 下：另见第 7 节。
+- 挂在已有 nginx 站点的子路径下（例如 `/plan/`）：另见第 7 节。
 - 服务器上已经跑着旧版：见第 8 节「如何从旧版更新」。
 
 ## 架构
@@ -118,45 +118,52 @@ sudo vcca update
 重启会中断正在运行的任务（下次启动标记为"中断"；fetch 已抓的数据不会丢，重新运行即可续抓）。
 nginx 站点不会被更新改动。
 
-## 7. 在 DMIT 测试站的 `/plan/` 下运行
+## 7. 挂在已有 nginx 站点的子路径下（例如 `/plan/`）
 
-DMIT 测试服务器上，本工具不使用独立域名，而是挂在已有站点 `https://genshin.fastcdn.world:8443/plan/` 下：
-8443 的 server 块属于 AirChina Ops（`/company`、`/pilot`、`/api/`），带 Basic Auth，证书由该站点管理。
-做法是：照常安装服务，但**不用**安装脚本生成的独立站点，改为在 8443 的 server 块里 include 一段转发配置
-（`deploy/dmit-portal/routes.conf`，详见 [dmit-portal/README.md](dmit-portal/README.md)）。
+适用于：服务器上已经有一个 nginx 站点（自己的域名、证书，可能还有别的应用），
+想把本工具放在它的某个子路径下，例如 `https://example.com/plan/`，而不是给它单独一个域名。
+下面用 `/plan/` 举例，换成你的前缀即可。
 
-1. 按第 2 节拉取代码，然后安装（不申请证书）：
+1. 按第 2 节拉取代码，安装时不申请证书（证书由已有站点负责）：
    ```bash
    cd /opt/vcca/app
-   sudo bash deploy/install.sh --domain genshin.fastcdn.world --no-certbot
+   sudo bash deploy/install.sh --domain <已有站点的域名> --no-certbot
    ```
-2. 停用脚本生成的独立站点（它监听 80 端口，这里用不到）：
+2. 停用安装脚本生成的独立站点（子路径模式用不到它）：
    ```bash
    sudo rm /etc/nginx/sites-enabled/vcca
    ```
-   **注意**：以后每次重新运行 `install.sh` 都会重新启用它，运行后要再删一次。日常更新用 `sudo vcca update`，它不动 nginx。
-3. 安装转发配置和测试中心首页：
-   ```bash
-   sudo install -D -m 644 deploy/dmit-portal/routes.conf /etc/nginx/snippets/vcca-test-portal.conf
-   sudo install -D -m 644 deploy/dmit-portal/index.html /var/www/vcca-test-portal/index.html
-   ```
-4. 确认 AirChina Ops 站点（`/etc/nginx/sites-available/` 下的 airchina-ops-test 配置）**8443 的 server 块**里有这一行，没有就加上：
+   **注意**：以后每次重新运行 `install.sh` 都会重新启用它，运行后要再删一次。
+   日常更新用 `sudo vcca update`，它不动 nginx。
+3. 在已有站点的 `server { ... }` 块（提供 HTTPS 的那个）里加入：
    ```nginx
-   include /etc/nginx/snippets/vcca-test-portal.conf;
+   location = /plan { return 308 /plan/$is_args$args; }
+   location ^~ /plan/ {
+       proxy_pass http://127.0.0.1:8770/;            # 结尾的 / 去掉 /plan/ 前缀
+       proxy_http_version 1.1;
+       proxy_set_header Host $http_host;
+       proxy_set_header X-Forwarded-For $remote_addr;   # 登录限速（VCCA_TRUST_PROXY=1）
+       proxy_set_header X-Forwarded-Proto $scheme;      # https -> 会话 Cookie 带 Secure
+       proxy_cookie_path / /plan/;                      # 会话 Cookie 只发给 /plan/
+       client_max_body_size 600m;                       # workspaces.db 上传（应用上限 512 MB）
+       client_body_timeout 300s;
+       proxy_request_buffering off;                     # 上传直接流给应用
+       proxy_read_timeout 300s;
+       proxy_send_timeout 300s;
+   }
    ```
-5. 检查通过后再重载：
+   可以直接写在 server 块里，也可以放到单独的文件（例如 `/etc/nginx/snippets/vcca.conf`）再在 server 块里
+   `include /etc/nginx/snippets/vcca.conf;`。
+   如果已有站点开了 Basic Auth，可在 `location ^~ /plan/` 里加 `proxy_set_header Authorization "";`，
+   不把 Basic Auth 的凭据转发给本工具（可选）。
+4. 检查通过后再重载：
    ```bash
    sudo nginx -t && sudo systemctl reload nginx
    ```
-6. 打开 `https://genshin.fastcdn.world:8443/plan/`（先过站点的 Basic Auth，再用网页账号登录）。
+5. 打开 `https://<已有站点的域名>/plan/` 登录。
 
-说明：
-
-- `routes.conf` 把 `/plan/` 转发到 `127.0.0.1:8770/`（去掉前缀），把会话 Cookie 的路径改成 `/plan/`
-  （`proxy_cookie_path`），清掉 Basic Auth 的 `Authorization` 头，上传上限 600m；`/plan` 会跳转到 `/plan/`。
-  前端所有请求和下载链接都是相对路径，应用本身不需要知道前缀。
-- `location = /` 把站点根目录换成测试中心首页（`index.html`，链接到 `/company` 和 `/plan/`）。
-- 改 `routes.conf` 后重复第 3、5 步。要撤掉：删除 include 那一行，`nginx -t` 后重载。
+前端所有请求和下载链接都是相对路径，应用本身不需要知道前缀；必须以 `/plan/`（带结尾斜杠）访问，
+上面的第一条 `location` 负责把 `/plan` 跳转过去。要撤掉：删除这两个 `location`，`nginx -t` 后重载。
 
 ## 8. 如何从旧版更新
 
@@ -231,9 +238,10 @@ FR24_PASSWORD='你的密码'
 ```bash
 sudo chown -R vcca:vcca /srv/vcca
 cd /opt/vcca/app
-sudo bash deploy/install.sh --domain <域名> [--email ...]          # 独立域名
-sudo bash deploy/install.sh --domain genshin.fastcdn.world --no-certbot   # DMIT：之后按第 7 节第 2 步删除独立站点
+sudo bash deploy/install.sh --domain <域名> [--email ...]
 ```
+
+挂在已有站点子路径下的，按第 7 节安装（`--no-certbot`，并删除生成的独立站点）。
 
 `vcca.env` 已存在，所以不会再询问 FR24 账号和网页账号；旧的网页账号（`state/users.toml`）照常可用。
 脚本会重建 venv 依赖、安装新的服务单元（`WorkingDirectory=/opt/vcca/app`、`VCCA_HOME=/srv/vcca`）和 `vcca` 命令，并启动服务。
