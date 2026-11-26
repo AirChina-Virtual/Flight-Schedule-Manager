@@ -415,6 +415,7 @@ class TestUploads(WebTestCase):
         self.assertIn("SQLite", d["error"])
         new = make_vamsys_db(Path(self.tmp.name) / "new.db", revision=99,
                              extra=(("00000000-0000-0000-0000-00000000000a", "我的航空公司", 5),))
+        before = set(webapp.App._backups(target))          # other tests in this class upload to the same home
         st, d = self.upload("/api/upload/vamsys", new.read_bytes(), query=q)
         self.assertEqual(st, 200, d)
         self.assertEqual((d["revision"], d["workspace_name"], d["selected"], d["needs_selection"]),
@@ -426,7 +427,9 @@ class TestUploads(WebTestCase):
         self.assertEqual([p.name for p in target.parent.iterdir() if p.name.startswith(".")], [])
         st, dd = self.authed("GET", "/api/data", query=q)
         self.assertEqual(dd["vamsys"]["revision"], 99)
-        self.assertEqual(len(dd["vamsys"]["backups"]), 1)
+        self.assertEqual(len(dd["vamsys"]["backups"]), min(len(before) + 1, webapp.VAMSYS_BACKUPS_KEPT))
+        self.assertEqual(dd["vamsys"]["backups"][0]["name"], d["backup"])          # newest first
+        self.assertNotIn(target.parent / d["backup"], before)
         self.assertEqual(len(dd["vamsys"]["workspaces"]), 2)
 
     def test_vamsys_upload_other_workspace_and_select(self):
@@ -471,6 +474,54 @@ class TestUploads(WebTestCase):
         self.assertEqual(tomllib.loads(out), {"export": {"x": 1}, "vamsys": {"workspace_id": "b"}})
         out = webapp.App._set_toml_value("[vamsys]\ncollection = 1\n", "vamsys", "workspace_id", '"b"')
         self.assertEqual(tomllib.loads(out)["vamsys"], {"collection": 1, "workspace_id": "b"})
+
+    def test_same_second_uploads_keep_every_backup(self):
+        # regression: backups were named <stem>.<YYYYmmdd-HHMMSS>.db, so two uploads within one second
+        # os.replace()d the first backup away (lost data; also made test_vamsys_upload flaky)
+        from vcca import fr24_store as FS
+
+        q = f"season={SEASON}"
+        vtarget, ctarget = self.home / "vamsys" / "workspaces.db", self.cache / "fr24_cache.db"
+        src = Path(self.tmp.name) / "same_sec_cache.db"
+        with FS.FR24Store(src) as stc:
+            stc.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        vdb = make_vamsys_db(Path(self.tmp.name) / "same_sec.db")
+        for path, data, target in (("/api/upload/vamsys", vdb.read_bytes(), vtarget),
+                                   ("/api/upload/fr24cache", src.read_bytes(), ctarget)):
+            with self.subTest(path=path):
+                for p in webapp.App._backups(target):
+                    p.unlink()
+                # the shared home must not keep year-2099 backups (they would sort first in other tests)
+                self.addCleanup(lambda t=target: [p.unlink() for p in webapp.App._backups(t)])
+                with mock.patch.object(webapp, "_stamp", return_value="20990101-000000"):
+                    names = []
+                    for _ in range(3):
+                        st, d = self.upload(path, data, query=q)
+                        self.assertEqual(st, 200, d)
+                        names.append(d["backup"])
+                stem = target.stem
+                self.assertEqual(names, [f"{stem}.20990101-000000.db", f"{stem}.20990101-000000-1.db",
+                                         f"{stem}.20990101-000000-2.db"])
+                self.assertEqual([p.name for p in webapp.App._backups(target)], names[::-1])   # newest first
+                self.assertTrue(all((target.parent / n).stat().st_size > 0 for n in names))
+
+    def test_install_rotation_with_same_second_names(self):
+        d = Path(self.tmp.name) / "rot"
+        d.mkdir()
+        target = d / "x.db"
+        target.write_bytes(b"v0")
+        with mock.patch.object(webapp, "_stamp", return_value="20990101-000000"):
+            for i in range(1, 13):
+                new = d / f".new{i}"
+                new.write_bytes(f"v{i}".encode())
+                self.app._install(new, target, keep=3)
+        self.assertEqual(target.read_bytes(), b"v12")
+        kept = webapp.App._backups(target)
+        # 12 backups x.20990101-000000[-1..-11].db (v0..v11); the 3 newest by counter survive (-11 after -9)
+        self.assertEqual([p.name for p in kept], ["x.20990101-000000-11.db", "x.20990101-000000-10.db",
+                                                  "x.20990101-000000-9.db"])
+        self.assertEqual([p.read_bytes() for p in kept], [b"v11", b"v10", b"v9"])
+        self.assertEqual(sorted(p.name for p in d.iterdir()), sorted(["x.db"] + [p.name for p in kept]))
 
     def test_upload_limits(self):
         with mock.patch.object(webapp, "MAX_UPLOAD_BYTES", 50):

@@ -90,6 +90,34 @@ def _stamp() -> str:
     return _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
+#: backup / history version: ``YYYYmmdd-HHMMSS`` plus ``-n`` when several land in the same second
+VERSION_RE = r"\d{8}-\d{6}(?:-\d+)?"
+
+
+def _version_key(version: str) -> tuple[str, int]:
+    """Sort key: time, then the same-second counter numerically (``-10`` after ``-9``)."""
+    stamp, _, n = version[:15], version[15:16], version[16:]
+    return stamp, int(n) if n.isdigit() else 0
+
+
+def _new_backup_path(directory: Path, stem: str, suffix: str) -> Path:
+    """A fresh ``<stem>.<version><suffix>`` in ``directory``, reserved by creating it empty (exclusive create), so
+    two backups in the same second (or from two processes) never overwrite each other. The counter continues after
+    the highest one already present for this second (rotation may have deleted lower ones), so newer backups always
+    sort newer. The caller then replaces / copies onto it."""
+    base = _stamp()
+    rx = re.compile(re.escape(f"{stem}.{base}") + r"(?:-(\d+))?" + re.escape(suffix))
+    used = [int(m.group(1) or 0) for p in directory.iterdir() if (m := rx.fullmatch(p.name))]
+    n = max(used) + 1 if used else 0
+    while True:
+        p = directory / f"{stem}.{base}{f'-{n}' if n else ''}{suffix}"
+        try:
+            with open(p, "xb"):
+                return p
+        except FileExistsError:
+            n += 1
+
+
 def max_upload_bytes() -> int:
     return MAX_UPLOAD_BYTES
 
@@ -807,11 +835,11 @@ class App:
             return []
         out = []
         for p in hist.glob(f"{stem}.*.toml"):
-            m = re.fullmatch(re.escape(stem) + r"\.(\d{8}-\d{6}(?:-\d+)?)\.toml", p.name)
+            m = re.fullmatch(re.escape(stem) + rf"\.({VERSION_RE})\.toml", p.name)
             if m:
                 st = p.stat()
                 out.append({"version": m.group(1), "size": st.st_size, "mtime": st.st_mtime})
-        return sorted(out, key=lambda x: x["version"], reverse=True)
+        return sorted(out, key=lambda x: _version_key(x["version"]), reverse=True)
 
     def h_config(self, req: Request) -> Response:
         sdir = self._season_dir(req.query.get("season"))
@@ -836,7 +864,7 @@ class App:
         sdir = self._season_dir(req.query.get("season"))
         path, hist = self._config_paths(sdir, req.query.get("key", ""))
         version = req.query.get("version", "")
-        if not re.fullmatch(r"\d{8}-\d{6}(?:-\d+)?", version):
+        if not re.fullmatch(VERSION_RE, version):
             raise HTTPError(400, "版本号不合法")
         p = hist / f"{path.stem}.{version}.toml"
         if not p.is_file():
@@ -891,11 +919,7 @@ class App:
             path.parent.mkdir(parents=True, exist_ok=True)
             backup = None
             if path.is_file():
-                backup = hist / f"{path.stem}.{_stamp()}.toml"
-                n = 1
-                while backup.exists():
-                    backup = hist / f"{path.stem}.{_stamp()}-{n}.toml"
-                    n += 1
+                backup = _new_backup_path(hist, path.stem, ".toml")
                 shutil.copy2(path, backup)
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_bytes(text.encode("utf-8"))
@@ -927,7 +951,7 @@ class App:
         path, hist = self._config_paths(sdir, key)
         version = str(d.get("version", ""))
         p = hist / f"{path.stem}.{version}.toml"
-        if not re.fullmatch(r"\d{8}-\d{6}(?:-\d+)?", version) or not p.is_file():
+        if not re.fullmatch(VERSION_RE, version) or not p.is_file():
             raise HTTPError(404, "没有这个历史版本")
         status, res = self._save_config(sdir, key, p.read_bytes().decode("utf-8"), d.get("mtime_ns"))
         return json_response(res, status)
@@ -952,10 +976,12 @@ class App:
 
     @staticmethod
     def _backups(target: Path) -> list[Path]:
-        """``<stem>.<YYYYmmdd-HHMMSS>.db`` next to ``target``, newest first."""
-        rx = re.compile(re.escape(target.stem) + r"\.\d{8}-\d{6}\.db")
-        return sorted((p for p in target.parent.glob(f"{target.stem}.*.db") if rx.fullmatch(p.name)),
-                      key=lambda p: p.name, reverse=True) if target.parent.is_dir() else []
+        """``<stem>.<YYYYmmdd-HHMMSS>[-n].db`` next to ``target``, newest first."""
+        if not target.parent.is_dir():
+            return []
+        rx = re.compile(re.escape(target.stem) + rf"\.({VERSION_RE})\.db")
+        found = [(m.group(1), p) for p in target.parent.glob(f"{target.stem}.*.db") if (m := rx.fullmatch(p.name))]
+        return [p for _, p in sorted(found, key=lambda vp: _version_key(vp[0]), reverse=True)]
 
     _vamsys_backups = _backups
 
@@ -1049,19 +1075,23 @@ class App:
 
     def _install(self, new: Path, target: Path, keep: int) -> Path | None:
         """Atomically replace ``target`` by ``new`` (same directory). The old file is renamed to
-        ``<stem>.<time>.db``; only the newest ``keep`` backups are kept. Returns the backup path."""
-        backup = None
+        ``<stem>.<time>[-n].db`` (a new name every time, never overwriting an earlier backup); only the newest
+        ``keep`` backups are kept. Returns the backup path."""
+        backup, moved = None, False
         try:
             if target.is_file():
-                backup = target.with_name(f"{target.stem}.{_stamp()}.db")
+                backup = _new_backup_path(target.parent, target.stem, ".db")
                 os.replace(target, backup)
+                moved = True
             for side in ("-wal", "-shm"):          # never let an old -wal/-shm meet the new file
                 target.with_name(target.name + side).unlink(missing_ok=True)
             os.replace(new, target)
         except OSError as e:
             new.unlink(missing_ok=True)
-            if backup and backup.is_file() and not target.exists():
+            if backup and moved and not target.exists():
                 os.replace(backup, target)
+            elif backup and not moved:
+                backup.unlink(missing_ok=True)      # the empty reserved name
             raise HTTPError(409, f"替换失败（文件可能被占用）: {e}") from None
         for old in self._backups(target)[keep:]:
             old.unlink(missing_ok=True)
@@ -1224,7 +1254,7 @@ class App:
             if dest.is_file():
                 hist = sdir / ".plan_history"
                 hist.mkdir(exist_ok=True)
-                backup = hist / f"{dest.stem}.{_stamp()}.xls"
+                backup = _new_backup_path(hist, dest.stem, ".xls")
                 shutil.copy2(dest, backup)
             os.replace(tmp, dest)
             res: dict[str, Any] = {"ok": True, "name": name, "backup": backup.name if backup else None, **info}
