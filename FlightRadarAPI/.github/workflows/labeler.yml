@@ -1,0 +1,180 @@
+name: PR Labeler
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    name: Apply PR labels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const author = (pr.user && pr.user.login) || "";
+            const isDependabot =
+              author === "dependabot[bot]" ||
+              author === "dependabot-preview[bot]";
+
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              }
+            );
+            const paths = files.map((f) => f.filename);
+            core.info(`Changed files (${paths.length}):\n  ` + paths.join("\n  "));
+
+            const goPackage = "go/flightradarapi/";
+
+            // Go keeps its tests inside the package, where python/ and nodejs/
+            // keep them in a sibling tests/ directory. Told apart here so a
+            // test-only PR gets "tests" and not "api".
+            const isGoTest = (f) =>
+              f.startsWith(goPackage) &&
+              (/_test\.go$/.test(f) || f.startsWith(goPackage + "testdata/"));
+
+            const isCore = (f) =>
+              f === "python/FlightRadarAPI/core.py" ||
+              f === "python/FlightRadarAPI/request.py" ||
+              f === "nodejs/FlightRadarAPI/core.js" ||
+              f === "nodejs/FlightRadarAPI/request.js" ||
+              f === "go/flightradarapi/core.go" ||
+              f === "go/flightradarapi/request.go" ||
+              // The Go port owns the cookie jar its siblings get from their
+              // HTTP client, so it belongs to the same layer as request.go.
+              f === "go/flightradarapi/cookies.go";
+
+            const isEntities = (f) =>
+              /^(python|nodejs)\/FlightRadarAPI\/entities\//.test(f) ||
+              // One package per directory in Go: the entities are files.
+              /^go\/flightradarapi\/(entity|airport|flight)\.go$/.test(f);
+
+            const isInPackage = (f) =>
+              /^(python|nodejs)\/FlightRadarAPI\//.test(f) ||
+              (f.startsWith(goPackage) && !isGoTest(f));
+
+            const isTests = (f) =>
+              /^(python|nodejs)\/tests\//.test(f) || isGoTest(f);
+
+            const isCi = (f) => f.startsWith(".github/");
+
+            const isDeps = (f) =>
+              f === "python/pyproject.toml" ||
+              f === "nodejs/package.json" ||
+              f === "nodejs/package-lock.json" ||
+              f === "go/go.mod" ||
+              f === "go/go.sum";
+
+            const isBuild = (f) =>
+              /(^|\/)Makefile$/.test(f) ||
+              f === "nodejs/.eslintrc.json" ||
+              f === "python/.flake8" ||
+              f === ".gitignore" ||
+              f === "nodejs/.npmignore";
+
+            const isDocs = (f) =>
+              f.startsWith("docs/") ||
+              f === ".readthedocs.yaml" ||
+              /\.md$/i.test(f);
+
+            const isPython = (f) => f.startsWith("python/");
+            const isNode = (f) => f.startsWith("nodejs/");
+            const isGo = (f) => f.startsWith("go/");
+
+            const desired = new Set();
+
+            for (const f of paths) {
+              if (isCore(f)) desired.add("api:core");
+              if (isEntities(f)) desired.add("api:entities");
+              if (isInPackage(f) && !isCore(f) && !isEntities(f)) desired.add("api");
+              if (isTests(f)) desired.add("tests");
+              if (isCi(f)) desired.add("ci");
+              if (isDeps(f)) desired.add("deps");
+              if (isBuild(f)) desired.add("build");
+              if (isDocs(f)) desired.add("docs");
+              if (isPython(f)) desired.add("pkg:python");
+              if (isNode(f)) desired.add("pkg:node");
+              if (isGo(f)) desired.add("pkg:go");
+            }
+
+            // Dependabot PRs (we only enable Dependabot for security advisories).
+            if (isDependabot) {
+              desired.add("deps");
+              desired.add("security");
+            }
+
+            // Title-based detection (conventional commits: `type(scope)!: subject`).
+            const titleMap = {
+              feat: "feature",
+              fix: "bug",
+              perf: "performance",
+              revert: "revert",
+              docs: "docs",
+              ci: "ci",
+              build: "build",
+            };
+            const title = pr.title || "";
+            const titleMatch = title.match(/^(\w+)(?:\(([^)]+)\))?!?:/);
+            const titleType = titleMatch ? titleMatch[1].toLowerCase() : null;
+            const titleScope = titleMatch && titleMatch[2]
+              ? titleMatch[2].toLowerCase()
+              : null;
+            if (titleType && titleMap[titleType]) {
+              desired.add(titleMap[titleType]);
+            }
+            if (titleScope === "deps" || titleScope === "deps-dev") {
+              desired.add("deps");
+            }
+
+            // Sync: only manage our labels — leave anything else (issue labels, etc.) alone.
+            const managed = new Set([
+              "api:core", "api:entities", "api", "tests",
+              "ci", "build", "feature", "docs",
+              "revert", "performance", "bug",
+              "deps", "security", "pkg:python", "pkg:node", "pkg:go",
+            ]);
+
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+            });
+            const current = new Set(currentLabels.map((l) => l.name));
+
+            const toAdd = [...desired].filter((l) => !current.has(l));
+            const toRemove = [...current].filter(
+              (l) => managed.has(l) && !desired.has(l)
+            );
+
+            for (const name of toRemove) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                name,
+              });
+            }
+            if (toAdd.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: toAdd,
+              });
+            }
+
+            core.info(
+              `Desired: [${[...desired].join(", ")}] | ` +
+              `Added: [${toAdd.join(", ")}] | ` +
+              `Removed: [${toRemove.join(", ")}]`
+            );

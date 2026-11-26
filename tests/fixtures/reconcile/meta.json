@@ -1,0 +1,28 @@
+{
+ "numbers": [
+  "CA1109",
+  "CA754",
+  "CA3155",
+  "CA3156",
+  "CA1005",
+  "CA1006",
+  "CA1303",
+  "CA1805",
+  "CA1806"
+ ],
+ "callsigns": [
+  "CCA1109",
+  "CCA754",
+  "CAO3155",
+  "CAO3156",
+  "CAO1005",
+  "CAO1006",
+  "CCA1303",
+  "CCA1805",
+  "CCA1806"
+ ],
+ "rows": 707,
+ "legs": 12,
+ "routes": 9,
+ "source": "fr24_cache legacy JSON (flight_histories updated 2026-11-25T02:41:17Z)"
+}

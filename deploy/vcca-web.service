@@ -1,0 +1,32 @@
+# /etc/systemd/system/vcca-web.service — vCCA web front end (installed by deploy/install.sh)
+[Unit]
+Description=vCCA season plan web front end (gunicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vcca
+Group=vcca
+WorkingDirectory=/opt/vcca/fr24_work
+EnvironmentFile=/etc/vcca/vcca.env
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+# ONE worker on purpose: the job runner (one fetch/build at a time), its state and the report cache live in this
+# process. Threads serve concurrent requests (log polling, downloads) while a job runs.
+ExecStart=/opt/vcca/venv/bin/gunicorn --workers 1 --threads 8 --timeout 120 --graceful-timeout 30 \
+    --bind 127.0.0.1:8770 --access-logfile - vcca.webapp:application
+# On stop/restart a running job is interrupted (SIGINT to its process group) and marked "interrupted" on restart.
+KillMode=mixed
+TimeoutStopSec=45
+Restart=on-failure
+RestartSec=5
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/vcca
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,213 @@
+{
+"by_flight": {
+"CA1005": {
+"id": "CA1005",
+"label": "CA1005 / CAO1005",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/748.png",
+"callsign": "CAO1005",
+"flight": "CA1005",
+"operator": "CAO",
+"operator_id": 748
+},
+"type": "schedule",
+"match": "begins"
+},
+"CA1006": {
+"id": "CA1006",
+"label": "CA1006",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/748.png",
+"flight": "CA1006",
+"operator": "CAO",
+"operator_id": 748
+},
+"type": "schedule",
+"match": "begins"
+},
+"CA1109": {
+"id": "CA1109",
+"label": "CA1109 / CCA1109",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/129.png",
+"callsign": "CCA1109",
+"flight": "CA1109",
+"operator": "CCA",
+"operator_id": 129
+},
+"type": "schedule",
+"match": "begins"
+},
+"CA1303": {
+"id": "CA1303",
+"label": "CA1303 / CCA1304",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/129.png",
+"callsign": "CCA1304",
+"flight": "CA1303",
+"operator": "CCA",
+"operator_id": 129
+},
+"type": "schedule",
+"match": "begins"
+},
+"CA1805": {
+"id": "CA1805",
+"label": "CA1805 / CCA1805",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/129.png",
+"callsign": "CCA1805",
+"flight": "CA1805",
+"operator": "CCA",
+"operator_id": 129
+},
+"type": "schedule",
+"match": "begins"
+},
+"CA1806": {
+"id": "CA1806",
+"label": "CA1806 / CCA1806",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/129.png",
+"callsign": "CCA1806",
+"flight": "CA1806",
+"operator": "CCA",
+"operator_id": 129
+},
+"type": "schedule",
+"match": "begins"
+},
+"CA3155": {
+"id": "CA3155",
+"label": "CA3155 / CAO3155",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/748.png",
+"callsign": "CAO3155",
+"flight": "CA3155",
+"operator": "CAO",
+"operator_id": 748
+},
+"type": "schedule",
+"match": "begins"
+},
+"CA3156": {
+"id": "CA3156",
+"label": "CA3156 / CAO3156",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/748.png",
+"callsign": "CAO3156",
+"flight": "CA3156",
+"operator": "CAO",
+"operator_id": 748
+},
+"type": "schedule",
+"match": "begins"
+},
+"CA754": {
+"id": "CA754",
+"label": "CA754 / CCA754",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/129.png",
+"callsign": "CCA754",
+"flight": "CA754",
+"operator": "CCA",
+"operator_id": 129
+},
+"type": "schedule",
+"match": "begins"
+}
+},
+"by_callsign": {
+"CAO1005": {
+"id": "CA1005",
+"label": "CA1005 / CAO1005",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/748.png",
+"callsign": "CAO1005",
+"flight": "CA1005",
+"operator": "CAO",
+"operator_id": 748
+},
+"type": "schedule",
+"match": "begins"
+},
+"CCA1109": {
+"id": "CA1109",
+"label": "CA1109 / CCA1109",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/129.png",
+"callsign": "CCA1109",
+"flight": "CA1109",
+"operator": "CCA",
+"operator_id": 129
+},
+"type": "schedule",
+"match": "begins"
+},
+"CCA1805": {
+"id": "CA1805",
+"label": "CA1805 / CCA1805",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/129.png",
+"callsign": "CCA1805",
+"flight": "CA1805",
+"operator": "CCA",
+"operator_id": 129
+},
+"type": "schedule",
+"match": "begins"
+},
+"CCA1806": {
+"id": "CA1806",
+"label": "CA1806 / CCA1806",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/129.png",
+"callsign": "CCA1806",
+"flight": "CA1806",
+"operator": "CCA",
+"operator_id": 129
+},
+"type": "schedule",
+"match": "begins"
+},
+"CAO3155": {
+"id": "CA3155",
+"label": "CA3155 / CAO3155",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/748.png",
+"callsign": "CAO3155",
+"flight": "CA3155",
+"operator": "CAO",
+"operator_id": 748
+},
+"type": "schedule",
+"match": "begins"
+},
+"CAO3156": {
+"id": "CA3156",
+"label": "CA3156 / CAO3156",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/748.png",
+"callsign": "CAO3156",
+"flight": "CA3156",
+"operator": "CAO",
+"operator_id": 748
+},
+"type": "schedule",
+"match": "begins"
+},
+"CCA754": {
+"id": "CA754",
+"label": "CA754 / CCA754",
+"detail": {
+"logo": "https://cdn.flightradar24.com/assets/airlines/logotypes/129.png",
+"callsign": "CCA754",
+"flight": "CA754",
+"operator": "CCA",
+"operator_id": 129
+},
+"type": "schedule",
+"match": "begins"
+}
+}
+}

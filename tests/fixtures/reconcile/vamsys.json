@@ -1,0 +1,423 @@
+{
+"revision": 26056,
+"routes": [
+{
+"id": "11507810",
+"op": "CCA",
+"callsign": "CCA1109",
+"number": "CA1109",
+"orig": "ZBAA",
+"dest": "ZBXH",
+"type": "scheduled",
+"dep": "03:00",
+"arr": "04:20",
+"dep_min": 180,
+"arr_min": 260,
+"days": [
+0,
+1,
+2,
+3,
+4,
+5,
+6
+],
+"fleet_ids": [
+"26071",
+"26072",
+"26073",
+"26074",
+"26076",
+"26084",
+"26085",
+"26086",
+"26097",
+"26102"
+],
+"start_date": "2026-05-10 22:43:42",
+"end_date": "",
+"cost_index": "80",
+"hidden": false,
+"tags": "",
+"is_special": false,
+"special_reason": ""
+},
+{
+"id": "11508597",
+"op": "CAO",
+"callsign": "CAO3155",
+"number": "CA3155",
+"orig": "ZUUU",
+"dest": "ESSA",
+"type": "cargo",
+"dep": "18:00",
+"arr": "04:45",
+"dep_min": 1080,
+"arr_min": 285,
+"days": [
+1,
+3,
+5
+],
+"fleet_ids": [
+"26722",
+"26724",
+"26725"
+],
+"start_date": "2026-05-10 22:44:20",
+"end_date": "",
+"cost_index": "150",
+"hidden": false,
+"tags": "",
+"is_special": false,
+"special_reason": ""
+},
+{
+"id": "11508598",
+"op": "CAO",
+"callsign": "CAO3156",
+"number": "CA3156",
+"orig": "EBLG",
+"dest": "ZUUU",
+"type": "cargo",
+"dep": "11:15",
+"arr": "21:40",
+"dep_min": 675,
+"arr_min": 1300,
+"days": [
+0,
+3,
+5
+],
+"fleet_ids": [
+"26722",
+"26724",
+"26725"
+],
+"start_date": "2026-05-10 22:44:20",
+"end_date": "",
+"cost_index": "150",
+"hidden": false,
+"tags": "",
+"is_special": false,
+"special_reason": ""
+},
+{
+"id": "11508930",
+"op": "CCA",
+"callsign": "CCA1805",
+"number": "CA1805",
+"orig": "ZBAA",
+"dest": "ZSGS",
+"type": "scheduled",
+"dep": "01:00",
+"arr": "03:45",
+"dep_min": 60,
+"arr_min": 225,
+"days": [
+0,
+1,
+2,
+3,
+4,
+5,
+6
+],
+"fleet_ids": [
+"26071",
+"26072",
+"26073",
+"26084",
+"26085",
+"26086",
+"26097",
+"26102"
+],
+"start_date": "2026-05-10 22:44:35",
+"end_date": "",
+"cost_index": "80",
+"hidden": false,
+"tags": "",
+"is_special": false,
+"special_reason": ""
+},
+{
+"id": "11508934",
+"op": "CCA",
+"callsign": "CCA1806",
+"number": "CA1806",
+"orig": "ZSGS",
+"dest": "ZBAA",
+"type": "scheduled",
+"dep": "04:45",
+"arr": "07:25",
+"dep_min": 285,
+"arr_min": 445,
+"days": [
+0,
+1,
+2,
+3,
+4,
+5,
+6
+],
+"fleet_ids": [
+"26071",
+"26072",
+"26073",
+"26084",
+"26085",
+"26086",
+"26097",
+"26102"
+],
+"start_date": "2026-05-10 22:44:36",
+"end_date": "",
+"cost_index": "80",
+"hidden": false,
+"tags": "",
+"is_special": false,
+"special_reason": ""
+},
+{
+"id": "11509762",
+"op": "CCA",
+"callsign": "CCA1303",
+"number": "CA1303",
+"orig": "ZBAA",
+"dest": "ZGSZ",
+"type": "scheduled",
+"dep": "04:55",
+"arr": "08:25",
+"dep_min": 295,
+"arr_min": 505,
+"days": [
+0,
+1,
+2,
+3,
+4,
+5,
+6
+],
+"fleet_ids": [
+"26071",
+"26072",
+"26073",
+"26074",
+"26076",
+"26077",
+"26078",
+"26079",
+"26080",
+"26084",
+"26085",
+"26086",
+"26087",
+"26088",
+"26089",
+"26090",
+"26091",
+"26092",
+"26093",
+"26094",
+"26095",
+"26097",
+"26102",
+"26591",
+"26594"
+],
+"start_date": "2026-05-10 22:45:11",
+"end_date": "",
+"cost_index": "",
+"hidden": false,
+"tags": "",
+"is_special": false,
+"special_reason": ""
+},
+{
+"id": "11695316",
+"op": "CCA",
+"callsign": "CCA754",
+"number": "CA754",
+"orig": "UUEE",
+"dest": "ZBAA",
+"type": "scheduled",
+"dep": "14:30",
+"arr": "22:00",
+"dep_min": 870,
+"arr_min": 1320,
+"days": [
+0,
+1,
+2,
+3,
+4,
+5,
+6
+],
+"fleet_ids": [
+"26077",
+"26078",
+"26079",
+"26080",
+"26087",
+"26088",
+"26089",
+"26091",
+"26092",
+"26093",
+"26094",
+"26095",
+"26591",
+"26594"
+],
+"start_date": "2026-06-23 13:33:00",
+"end_date": "",
+"cost_index": "150",
+"hidden": false,
+"tags": "",
+"is_special": false,
+"special_reason": ""
+},
+{
+"id": "14432425",
+"op": "CAO",
+"callsign": "CAO1005",
+"number": "CA1005",
+"orig": "ZSPD",
+"dest": "EBLG",
+"type": "cargo",
+"dep": "23:15",
+"arr": "11:20",
+"dep_min": 1395,
+"arr_min": 680,
+"days": [
+2
+],
+"fleet_ids": [
+"26722",
+"26724",
+"26725"
+],
+"start_date": "2026-11-25 16:00:00",
+"end_date": "",
+"cost_index": "150",
+"hidden": false,
+"tags": "",
+"is_special": false,
+"special_reason": ""
+},
+{
+"id": "14432894",
+"op": "CAO",
+"callsign": "CAO3155",
+"number": "CA3155",
+"orig": "ZUUU",
+"dest": "ESSA",
+"type": "cargo",
+"dep": "20:15",
+"arr": "06:25",
+"dep_min": 1215,
+"arr_min": 385,
+"days": [
+1,
+3,
+5
+],
+"fleet_ids": [
+"26722",
+"26724",
+"26725"
+],
+"start_date": "2026-11-25 16:00:00",
+"end_date": "",
+"cost_index": "150",
+"hidden": false,
+"tags": "",
+"is_special": false,
+"special_reason": ""
+}
+],
+"airports": {
+"LEMD": {
+"code": "LEMD",
+"icao": "LEMD",
+"iata": "MAD",
+"name": "ADOLFO SUAREZ MADRID-BARAJAS"
+},
+"ZGSZ": {
+"code": "ZGSZ",
+"icao": "ZGSZ",
+"iata": "SZX",
+"name": "BAOAN"
+},
+"ZBAA": {
+"code": "ZBAA",
+"icao": "ZBAA",
+"iata": "PEK",
+"name": "CAPITAL"
+},
+"ZSSS": {
+"code": "ZSSS",
+"icao": "ZSSS",
+"iata": "SHA",
+"name": "HONGQIAO"
+},
+"ZSGS": {
+"code": "ZSGS",
+"icao": "ZSGS",
+"iata": "JGS",
+"name": "JINGGANGSHAN"
+},
+"EBLG": {
+"code": "EBLG",
+"icao": "EBLG",
+"iata": "LGG",
+"name": "LIÈGE"
+},
+"KLAX": {
+"code": "KLAX",
+"icao": "KLAX",
+"iata": "LAX",
+"name": "LOS ANGELES INTL"
+},
+"ZSPD": {
+"code": "ZSPD",
+"icao": "ZSPD",
+"iata": "PVG",
+"name": "PUDONG"
+},
+"UUEE": {
+"code": "UUEE",
+"icao": "UUEE",
+"iata": "SVO",
+"name": "SHEREMETYEVO"
+},
+"ZUUU": {
+"code": "ZUUU",
+"icao": "ZUUU",
+"iata": "CTU",
+"name": "SHUANGLIU"
+},
+"ESSA": {
+"code": "ESSA",
+"icao": "ESSA",
+"iata": "ARN",
+"name": "STOCKHOLM ARLANDA"
+},
+"PANC": {
+"code": "PANC",
+"icao": "PANC",
+"iata": "ANC",
+"name": "TED STEVENS ANCHORAGE INTL"
+},
+"ZBXH": {
+"code": "ZBXH",
+"icao": "ZBXH",
+"iata": "XIL",
+"name": "XILINHAOTE"
+}
+}
+}

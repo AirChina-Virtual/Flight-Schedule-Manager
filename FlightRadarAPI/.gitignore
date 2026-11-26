@@ -1,0 +1,42 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.so
+dist/
+build/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Node.js
+node_modules/
+
+# Go
+coverage.out
+
+# Version managers (local dev only)
+.tool-versions
+.python-version
+.nvmrc
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docs build output
+docs/_build/
+
+# Misc
+.env
+.cache
+*.log

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+fr_venv/
+.venv/
+venv/
+
+# Local data and secrets (never commit)
+.env
+.env.*
+fr24_cache/
+webstate/
+*.db
+*.sqlite
+
+# Local backups of edited files (git history replaces them)
+legacy/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

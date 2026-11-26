@@ -1,0 +1,150 @@
+# vCCA VAMSYS fleet rules: fleet-ID groups and FR24 / CAAC aircraft-code -> VAMSYS fleet mappings.
+# Converted 1:1 from the constants at the top of fr24_work/rebuild_vamsys_plan.py
+# (legacy/rebuild_vamsys_plan.py); verified by tests/test_rules_roundtrip.py. Edit THIS file from now on.
+#
+# Fleet ID reference (VAMSYS workspace vCCA, resource 1):
+#   26071 A319 | 26072 A320 | 26073 A20N | 26074 A321 | 26076 A21N
+#   26084 B737 | 26085 B738 | 26086 B38M | 26097 C919 | 26102 C909(AJ27) | 26090 B752
+#   26091 B762 | 26092 B763 | 26077 A332 | 26078 A333 | 26079 A343 | 26080 A359
+#   26087 B742 | 26088 B744 | 26089 B748 | 26093 B772 | 26094 B77W | 26095 B789
+#   26591 A339 | 26594 A346 | 26718 BJN B738 | 26719 CCD B738
+#   26722 CAO B77F | 26724 CAO B74F | 26725 CAO A33F | 26728 DH8D (dirty stub)
+#
+# Groups are CUMULATIVE as in the legacy code (4C includes 3C, 4D includes 4C, ...); the
+# lists below are the fully expanded sets, so no inheritance logic is needed when loading.
+
+[cca_narrowbody]
+# VAMSYS Commercial Fleet Groups (ALL Param 9671/9677/9678/9679 aircraft regardless of
+# active/retired status; excl. 26728 DH8D)
+"3C" = ["26102"]  # 3C: AJ27
+"4C" = ["26102", "26071", "26072", "26073", "26074", "26076", "26084", "26085", "26086", "26097"]  # 10 fleets (4C)
+"4D" = ["26102", "26071", "26072", "26073", "26074", "26076", "26084", "26085", "26086", "26097", "26090"]  # 11 fleets (+ B752, ICAO 4D wingspan 38.05m)
+
+[cca_widebody]
+"4D" = ["26091", "26092"]  # B762, B763 (ICAO 4D wingspan 47.57m; AC=0 in DB)
+# 13 fleets (4D+4E: A332/A333/A339/A343/A346/A359/B742/B744/B762/B763/B772/B77W/B789)
+"4E" = ["26091", "26092", "26077", "26078", "26079", "26080", "26087", "26088", "26093", "26094", "26095", "26591", "26594"]
+"4F" = ["26091", "26092", "26077", "26078", "26079", "26080", "26087", "26088", "26093", "26094", "26095", "26591", "26594", "26089"]  # 14 fleets (+ 4F-only B748)
+
+[fixed_fleets]
+# Operators whose route fleets are fixed regardless of airport grade (plan 5.7).
+# Order matters for CSV output (legacy CAO_ACTIVE list order).
+CAO = ["26722", "26724", "26725"]
+CCD = ["26719"]
+BJN = ["26718"]
+
+[excluded]
+dirty = ["26728"]  # 26728 DH8D (dirty cross-4-airline turboprop stub)
+air_force = ["27929", "27930", "27931", "27932", "29710", "29711"]
+
+[cargo]
+# FR24 aircraft codes that identify a cargo (CAO) flight even under a CCA callsign.
+ac_codes = ["77F", "B77F", "B77L", "77L", "74Y", "74F", "B74F", "33F"]
+# Extra CAAC FD2 codes that mark a CCA plan row as widebody even when not in [ac_to_fleet_pax]
+# (legacy compute_recommended_fleets: c in ("330", "777", "787", "747")).
+widebody_fd2_extra = ["330", "777", "787", "747"]
+
+[ac_to_fleet_pax]
+# FR24 / CAAC aircraft code -> VAMSYS passenger fleet ID (CCA default mapping)
+"319" = "26071"
+"31C" = "26071"
+"A319" = "26071"
+"A19N" = "26071"
+"320" = "26072"
+"A320" = "26072"
+"A20N" = "26073"
+"32N" = "26073"
+"32D" = "26073"
+"32H" = "26073"
+"321" = "26074"
+"A321" = "26074"
+"A21N" = "26076"
+"32Q" = "26076"
+"737" = "26084"
+"73G" = "26084"
+"733" = "26084"
+"B737" = "26084"
+"738" = "26085"
+"73C" = "26085"
+"73E" = "26085"
+"73H" = "26085"
+"73K" = "26085"
+"73M" = "26085"
+"B738" = "26085"
+"7M8" = "26086"
+"7M1" = "26086"
+"B38M" = "26086"
+"919" = "26097"
+"C919" = "26097"
+"ARJ" = "26102"
+"909" = "26102"
+"AJ27" = "26102"
+"AR8" = "26102"
+"752" = "26090"
+"757" = "26090"
+"B752" = "26090"
+"762" = "26091"
+"B762" = "26091"
+"763" = "26092"
+"767" = "26092"
+"B763" = "26092"
+"330" = "26078"
+"332" = "26077"
+"A332" = "26077"
+"33C" = "26077"
+"33H" = "26077"
+"333" = "26078"
+"A333" = "26078"
+"339" = "26591"
+"A339" = "26591"
+"340" = "26079"
+"343" = "26079"
+"A343" = "26079"
+"346" = "26594"
+"A346" = "26594"
+"350" = "26080"
+"359" = "26080"
+"A359" = "26080"
+"742" = "26087"
+"B742" = "26087"
+"744" = "26088"
+"B744" = "26088"
+"748" = "26089"
+"B748" = "26089"
+"747" = "26089"
+"772" = "26093"
+"B772" = "26093"
+"77W" = "26094"
+"773" = "26094"
+"777" = "26094"
+"B77W" = "26094"
+"B773" = "26094"
+"787" = "26095"
+"789" = "26095"
+"B789" = "26095"
+
+[ac_to_fleet_cargo]
+# FR24 aircraft code -> VAMSYS CAO cargo fleet ID (used for op == CAO)
+"77F" = "26722"
+"B77F" = "26722"
+"B77L" = "26722"
+"77L" = "26722"
+"74Y" = "26724"
+"74F" = "26724"
+"B744" = "26724"
+"B74F" = "26724"
+"33F" = "26725"
+"A332" = "26725"
+"332" = "26725"
+
+[operator_ac_override]
+# Per-operator special mapping applied BEFORE the generic tables (legacy map_ac_to_fleet):
+#   CCD: these 737-family codes -> 26719, everything else falls back to [ac_to_fleet_pax]
+#   BJN: every code -> 26718 (ac_codes = ["*"])
+[operator_ac_override.CCD]
+fleet = "26719"
+ac_codes = ["738", "B738", "73C", "737", "B737"]
+
+[operator_ac_override.BJN]
+fleet = "26718"
+ac_codes = ["*"]

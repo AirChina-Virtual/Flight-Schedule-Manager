@@ -1,0 +1,51 @@
+# FlightRadarAPI
+Unofficial SDK for [FlightRadar24](https://www.flightradar24.com/) for Python.
+
+This SDK should only be used for your own educational purposes. If you are interested in accessing Flightradar24 data commercially, please contact business@fr24.com. See more information at [Flightradar24's terms and conditions](https://www.flightradar24.com/terms-and-conditions).
+
+**Official FR24 API**: https://fr24api.flightradar24.com/
+
+[![Documentation Status](https://readthedocs.org/projects/flightradarapi/badge/?version=latest)](https://flightradarapi.readthedocs.io/?badge=latest)
+[![Python Package](https://github.com/JeanExtreme002/FlightRadarAPI/workflows/Python%20Package/badge.svg)](https://github.com/JeanExtreme002/FlightRadarAPI/actions)
+[![License](https://img.shields.io/pypi/l/FlightRadarAPI)](https://github.com/JeanExtreme002/FlightRadarAPI)
+[![Pypi](https://img.shields.io/pypi/v/FlightRadarAPI?logo=pypi)](https://pypi.org/project/FlightRadarAPI/)
+[![Python Version](https://img.shields.io/badge/python-3.10+-8A2BE2)](https://pypi.org/project/FlightRadarAPI/)
+[![Npm](https://img.shields.io/npm/v/flightradarapi?logo=npm&color=red)](https://www.npmjs.com/package/flightradarapi)
+[![Node Version](https://img.shields.io/badge/node-18.17+-339933)](https://www.npmjs.com/package/flightradarapi)
+[![Go Reference](https://pkg.go.dev/badge/github.com/JeanExtreme002/FlightRadarAPI/go.svg)](https://pkg.go.dev/github.com/JeanExtreme002/FlightRadarAPI/go/flightradarapi)
+[![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8)](https://go.dev/dl/)
+[![Downloads](https://static.pepy.tech/personalized-badge/flightradarapi?period=total&units=international_system&left_color=grey&right_color=orange&left_text=downloads)](https://pypi.org/project/FlightRadarAPI/)
+[![Frequency](https://img.shields.io/pypi/dm/flightradarapi?style=flat&label=frequency)](https://pypi.org/project/FlightRadarAPI/)
+
+## Installing FlightRadarAPI:
+```
+$ pip install FlightRadarAPI
+```
+
+## Basic Usage:
+Import the class `FlightRadar24API` and create an instance of it.
+```py
+from FlightRadarAPI import FlightRadar24API
+fr_api = FlightRadar24API()
+```
+
+**Getting flights list:**
+```py
+flights = fr_api.get_flights(...)  # Returns a list of Flight objects
+```
+**Getting airports list:**
+```py
+airports = fr_api.get_airports(...)  # Returns a list of Airport objects
+all_airports = fr_api.get_airports()  # Omit the countries to get every airport
+```
+**Getting airlines list:**
+```py
+airlines = fr_api.get_airlines()
+```
+**Getting zones list:**
+```py
+zones = fr_api.get_zones()
+```
+
+## Documentation
+Explore the documentation of FlightRadarAPI package through [this site](https://flightradarapi.readthedocs.io/).
