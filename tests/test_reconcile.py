@@ -14,6 +14,7 @@ sys.path.insert(0, str(S.WORK_DIR / "tests" / "fixtures" / "reconcile"))
 import vcca_synth as X  # noqa: E402
 
 from vcca import reconcile as R  # noqa: E402
+from vcca.evidence import build_evidence  # noqa: E402
 from vcca.fleets import recommend_fleets  # noqa: E402
 from vcca.models import DecisionCategory as C, ReasonCode as RC, VROUTE_CATEGORIES  # noqa: E402
 
@@ -353,6 +354,26 @@ class TableCDTest(unittest.TestCase):
         self.assertEqual(d.target.fleet_ids, tuple(sorted(cfg().fleet_rules.fixed_fleets["CAO"])))
         self.assertEqual(d.target.cost_index, 150)
 
+    def test_create_fr24_ignores_one_off_substitution(self):
+        # regression (fixture CCA1795/CCA1796): A333 flown 2x, one A321 substitution. CREATE_FR24 used to take the
+        # raw aircraft counter -> MIXED pool (narrow + wide); the next run (route now in VAMSYS, B: KEEP_UNPLANNED)
+        # uses the filtered FR24 fleets -> widebody pool -> UPDATE fleet_ids / FLEET_EXTRA (not idempotent)
+        rows = [X.row("CA311", "CCA311", "ZBAA", "ZSSS", X.ts(2026, 11, d, 8), ac=ac)
+                for d, ac in ((12, "A333"), (19, "A321"), (21, "A333"))]
+        w = World(rows=rows)
+        ev = build_evidence(("CCA", "CCA311", "ZBAA", "ZSSS"), w.inp.index, cfg())
+        self.assertEqual(ev.fleet_ids, frozenset({"26078"}))              # A321 below fr24_ac_min_share/2x: ignored
+        (c,) = w.key("CCA311")
+        self.assertEqual(c.category, C.CREATE_FR24)
+        wide = tuple(sorted(recommend_fleets(cfg(), "CCA", "ZBAA", "ZSSS", route_type="scheduled",
+                                             fr24_fleet_ids=ev.fleet_ids).fleet_ids))
+        self.assertEqual(c.target.fleet_ids, wide)
+        self.assertFalse(set(c.target.fleet_ids) & cfg().fleet_rules.nb_all)
+        ch, res2 = R.idempotency_check(cfg(), w.inp, w.res, now=X.NOW)
+        self.assertEqual(ch, {})
+        (k,) = [d for d in res2.decisions if d.target.callsign == "CCA311"]
+        self.assertEqual((k.category, k.target.fleet_ids), (C.KEEP_UNPLANNED, wide))
+
     def test_airport_add(self):
         w = World(legs=[X.leg("CCA401", "ZBAA", "ZBAL", "08:00", "10:00", MWF)],
                   rows=X.series("CA401", "CCA401", "ZBAA", "ZBAL", "08:00", MWF))
@@ -576,7 +597,7 @@ class FreshDataFixesTest(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("VCCA_TEST_FULL", "1") != "0", "end-to-end run disabled (VCCA_TEST_FULL=0)")
 class FullDataAcceptanceTest(unittest.TestCase):
     """Plan 8 acceptance 1-2 end to end from $VCCA_HOME (plan .xls + workspaces.db + fr24_cache.db): closure on any
-    data (fixture home or VCCA_TEST_HOME); idempotency on the full real season only."""
+    data (fixture home or VCCA_TEST_HOME): closure + idempotency."""
 
     @classmethod
     def setUpClass(cls):
@@ -592,9 +613,6 @@ class FullDataAcceptanceTest(unittest.TestCase):
         self.assertEqual(sum(1 for d in self.res.decisions if d.category in VROUTE_CATEGORIES),
                          len(self.inp.vamsys.commercial_routes))
 
-    # On the fixture subset CREATE_FR24 of the unplanned CCA1795/CCA1796 (ZSHC<->ZGGG, rows only via reg: queries)
-    # is not idempotent (2nd run: FLEET_EXTRA), so this check stays on the real season data.
-    @S.full_data
     def test_idempotency(self):
         ch, res2 = R.idempotency_check(cfg(), self.inp, self.res, now=X.NOW)
         self.assertEqual(dict(ch), {})

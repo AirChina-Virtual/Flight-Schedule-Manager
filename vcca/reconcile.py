@@ -489,6 +489,14 @@ class _R:
         return recommend_fleets(self.cfg, op, orig, dest, route_type=rtype, plan_fd2=fd2,
                                 fr24_fleet_ids=ev.fleet_ids if ev else (), vamsys_fleet_ids=vfleets)
 
+    def fr24_rec(self, op, orig, dest, rtype, ev: Evidence) -> FleetRecommendation:
+        """Fleets for a route known only from FR24 (C: CREATE_FR24 / CHARTER / POSITIONING). Body tier from the
+        filtered ``ev.fleet_ids`` (one-off substitutions below fr24_ac_min_share ignored), exactly what the route
+        gets on the next run once it is in VAMSYS (B: _keep_unplanned) — passing the raw ``ev.ac_counter`` as plan
+        types here made a single narrowbody substitution turn a widebody route MIXED, so the next run reported
+        FLEET_EXTRA (not idempotent). The raw codes are only a fallback when none of them maps to a fleet."""
+        return self.rec(op, orig, dest, rtype, fd2=() if ev.fleet_ids else list(ev.ac_counter), ev=ev)
+
     @staticmethod
     def apply_rec(d: Decision, rec: FleetRecommendation) -> None:
         for r in rec.reasons:
@@ -949,7 +957,7 @@ def reconcile(cfg: "Config", plan: PlanData, groups: Mapping[RouteKey, PlanGroup
             d = R.create(C.POSITIONING, key, rtype,
                          ev.banks[0].mode_dep if ev.banks else "", ev.banks[0].mode_arr if ev.banks else "",
                          frozenset(ut.ts_utc_weekday(o.ev_ts) for o in acts),
-                         R.rec(op, orig, dest, rtype, fd2=list(ev.ac_counter), ev=ev), ev)
+                         R.fr24_rec(op, orig, dest, rtype, ev), ev)
             d.reasons.clear()
             d.needs_review, d.review_flags = False, []
             d.add_reason(RC.POSITIONING_FLIGHT, why=f"呼号{cs}不规范")
@@ -965,7 +973,7 @@ def reconcile(cfg: "Config", plan: PlanData, groups: Mapping[RouteKey, PlanGroup
             d = R.create(C.CHARTER, key, rtype, ev.banks[0].mode_dep if ev.banks else "",
                          ev.banks[0].mode_arr if ev.banks else "",
                          frozenset(ut.ts_utc_weekday(o.sched_dep or o.ev_ts) for o in acts),
-                         R.rec(op, orig, dest, rtype, fd2=list(ev.ac_counter), ev=ev), ev)
+                         R.fr24_rec(op, orig, dest, rtype, ev), ev)
             d.reasons.clear()
             d.needs_review, d.review_flags = False, []
             d.add_reason(code, **params)
@@ -993,7 +1001,7 @@ def reconcile(cfg: "Config", plan: PlanData, groups: Mapping[RouteKey, PlanGroup
             if ev.acts >= th.fr24_add_min_acts or weeks >= th.fr24_add_min_weeks:
                 R.hits["fr24_add_min_acts/min_weeks"] += 1
             continue
-        rec = R.rec(op, orig, dest, rtype, fd2=list(ev.ac_counter), ev=ev)
+        rec = R.fr24_rec(op, orig, dest, rtype, ev)
         sel = _select_fr24_banks(ev, th)
         won = _assign_weekdays(ev, sel)
         sel = [(i, b) for i, b in sel if won.get(i) and _bank_recent_on(b, None, rs)]
