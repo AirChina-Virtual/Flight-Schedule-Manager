@@ -1,0 +1,8 @@
+# vCCA season tool — server (Linux) dependencies. Python >= 3.11 (tomllib).
+# FlightRadarAPI is NOT installed from PyPI: the borrowed copy in FlightRadarAPI/python is put on sys.path
+# by the vcca package at runtime; its own dependencies are listed here. gunicorn serves vcca.webapp:application.
+openpyxl==3.1.5
+curl_cffi==0.17.0
+beautifulsoup4==4.15.0
+brotli==1.2.1
+gunicorn>=22,<24
