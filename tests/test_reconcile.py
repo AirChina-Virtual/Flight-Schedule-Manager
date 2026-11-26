@@ -573,10 +573,10 @@ class FreshDataFixesTest(unittest.TestCase):
 
 
 # =====================================================================================================================
-@unittest.skipUnless(os.environ.get("VCCA_TEST_FULL", "1") != "0" and (S.cfg().cache_dir / "flight_histories.json").is_file(),
+@unittest.skipUnless(os.environ.get("VCCA_TEST_FULL", "1") != "0" and S.cfg().cache_db.is_file(),
                      "full-data acceptance (set VCCA_TEST_FULL=0 to skip)")
 class FullDataAcceptanceTest(unittest.TestCase):
-    """Plan 8 acceptance 1-2 on the real season data (legacy JSON or fr24_cache.db): closure + idempotency."""
+    """Plan 8 acceptance 1-2 on the real season data (fr24_cache.db): closure + idempotency."""
 
     def test_closure_and_idempotency(self):
         c = cfg()

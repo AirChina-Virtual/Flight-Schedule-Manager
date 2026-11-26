@@ -29,7 +29,7 @@ WEEK_S = 7 * 86400
 def parse_hhmm(val) -> int | None:
     """'HH:MM', 'HHMM', 'HMM', 'H:MM' -> minutes of day (no modulo). Invalid / empty -> None.
 
-    Identical to legacy ``rebuild_vamsys_plan.parse_hhmm`` (e.g. '2400' -> 1440 is returned as-is).
+    Identical to the former ``rebuild_vamsys_plan.parse_hhmm`` (e.g. '2400' -> 1440 is returned as-is).
     """
     s = str(val or "").strip()
     if not s:

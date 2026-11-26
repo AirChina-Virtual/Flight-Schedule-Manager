@@ -1,5 +1,5 @@
 """Structured ``status``: ``collect_status(season)`` -> dict (web app ``/api/status``), ``print_status(d)`` -> the CLI
-text (``vcca_plan.py status``; output unchanged from the original ``cmd_status``).
+text (``vcca_plan.py status``).
 
 Times are UNIX seconds (``mtime``) plus the CLI's local-time display strings (``mtime_fmt``); the web front end
 formats the epoch itself with an explicit time zone.
@@ -101,8 +101,6 @@ def collect_status(season: str | Path | None = None) -> dict[str, Any]:
                           "checked": [{"path": p, "user": hu, "password": hp} for p, hu, hp in cs["checked"]]}
 
     # ---- FR24 cache
-    from .fr24_store import legacy_cache_files
-
     cache: dict[str, Any] = {"dir": str(cfg.cache_dir), "db": _file_info(cfg.cache_db), "stats": None}
     if cache["db"]["exists"]:
         try:
@@ -114,20 +112,8 @@ def collect_status(season: str | Path | None = None) -> dict[str, Any]:
             cache["stats"] = {"rows": s.rows, "last_fetch_at": s.last_fetch_at,
                               "last_fetch_fmt": fmt_ts(s.last_fetch_at) or "",
                               "targets_by_priority": dict(s.targets_by_priority), "stale_targets": s.stale_targets}
-        except NotImplementedError:
-            cache["stats_error"] = "not_implemented"
         except Exception as e:  # noqa: BLE001
             cache["stats_error"] = str(e)
-    legacy = []
-    for k, p in legacy_cache_files(cfg.cache_dir).items():
-        if p.is_dir():
-            fl = list(p.glob("*.json"))
-            newest = max((f.stat().st_mtime for f in fl), default=None)
-            legacy.append({"key": k, "kind": "dir", "files": len(fl), "newest": newest,
-                           "newest_fmt": fmt_mtime(newest) if newest else "-"})
-        else:
-            legacy.append({"key": k, "kind": "file", **_file_info(p)})
-    cache["legacy"] = legacy
     out["cache"] = cache
 
     # ---- runs
@@ -211,17 +197,10 @@ def print_status(d: dict[str, Any], print=print) -> int:  # noqa: A002 - injecta
         if s is not None:
             print(f"   行 {s['rows']}  最后抓取 {s['last_fetch_fmt'] or '无'}  目标 {s['targets_by_priority']}"
                   f"  过期 {s['stale_targets']}")
-        elif ca.get("stats_error") == "not_implemented":
-            print("   （fr24_store 尚未实现，跳过统计）")
         elif ca.get("stats_error"):
             print(f"   !! 统计失败: {ca['stats_error']}")
     else:
-        print("-  fr24_cache.db 尚未创建（首次 fetch 时由旧 JSON 导入）")
-    for x in ca["legacy"]:
-        if x["kind"] == "dir":
-            print(f"   旧 {x['key']:<17} {x['files']} 个文件  最新 {x['newest_fmt']}")
-        else:
-            print(f"   旧 {x['key']:<17} {x['size_fmt']:>8}  {x['mtime_fmt']}")
+        print("-  fr24_cache.db 尚未创建（首次 fetch 时创建，或在网页数据页导入）")
 
     print("\n=== 运行记录 ===")
     r = d["runs"]

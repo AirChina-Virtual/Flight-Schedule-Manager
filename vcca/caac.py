@@ -1,7 +1,7 @@
 """CAAC season pre-plan (.xls) -> PlanLeg / PlanGroup / RotationGap (plan 5.1).
 
-Port of legacy ``rebuild_vamsys_plan.load_raw_preplan`` / ``detect_rotation_gaps``; leg output is
-field-for-field identical (see tests/test_caac.py parity test).
+Port of ``load_raw_preplan`` / ``detect_rotation_gaps`` from the former script rebuild_vamsys_plan.py (removed; see
+git history); leg output was verified field-for-field identical before the script was removed.
 
 Row layout (CAAC 三字码 files, airport codes are actually ICAO):
   FD1 callsign  FD2 aircraft  FD3 weekday mask ('1.3.5.7')

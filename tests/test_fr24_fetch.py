@@ -282,14 +282,10 @@ class RunFetchTest(_TmpStore):
 
 
 class FetchEntryDryRunTest(unittest.TestCase):
-    """fetch(dry_run=True) against a temp cache dir: imports fixtures once, sends nothing, writes no targets."""
+    """fetch(dry_run=True) against an empty temp cache dir: creates the store, sends nothing, writes no targets."""
 
     def test_dry_run(self):
-        import shutil
-
-        fix = Path(__file__).resolve().parent / "fixtures" / "fetch"
         with tempfile.TemporaryDirectory() as d:
-            shutil.copytree(fix, Path(d) / "cache")
             cfg = dataclasses.replace(S.cfg(), cache_dir=Path(d) / "cache")
 
             class NoClient:
@@ -301,7 +297,7 @@ class FetchEntryDryRunTest(unittest.TestCase):
             self.assertTrue(rep.dry_run)
             self.assertGreaterEqual(rep.planned, len(S.plan().numbers))
             with FS.FR24Store(cfg.cache_db) as st:
-                self.assertIsNotNone(st.get_meta("legacy_import_done_at"))
+                self.assertEqual(st.count_rows(), 0)
                 self.assertEqual(list(st.iter_targets()), [])
             rep = FF.fetch(cfg, dry_run=True, log=logs.append, flights=["CA1109"], client=NoClient())
             self.assertEqual(rep.planned, 1)

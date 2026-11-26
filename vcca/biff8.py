@@ -1,4 +1,4 @@
-"""Pure-Python OLE2/BIFF8 .xls reader (copied verbatim from fr24_work/biff8_xls.py; no third-party deps)."""
+"""Pure-Python OLE2/BIFF8 .xls reader (originally the standalone biff8_xls.py, now removed; no third-party deps)."""
 
 import struct
 from pathlib import Path

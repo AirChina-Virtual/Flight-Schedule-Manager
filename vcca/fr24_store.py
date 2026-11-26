@@ -1,4 +1,4 @@
-"""SQLite FR24 cache ``fr24_cache/fr24_cache.db`` (plan 6.4; step 3).
+"""SQLite FR24 cache ``$VCCA_HOME/cache/fr24_cache.db`` (plan 6.4; step 3) — the only FR24 cache.
 
 Schema (SCHEMA_VERSION 1; created by ``FR24Store.init_schema``):
 
@@ -14,25 +14,19 @@ Schema (SCHEMA_VERSION 1; created by ``FR24Store.init_schema``):
   targets(query, kind, priority, last_ok_at INT, last_state, reason, PRIMARY KEY(query, kind))
   airport_info(icao PRIMARY KEY, iata, name)
   search_queries(query PRIMARY KEY, payload TEXT, fetched_at INT)   -- aux: search index (by_query)
-  meta(key PRIMARY KEY, value)         -- schema_version, legacy_import_done_at, last_deep_scan_at, ...
+  meta(key PRIMARY KEY, value)         -- schema_version, last_deep_scan_at, ...
 
 Merge rule (``upsert_rows``): a row seen at ``seen_at >= last_seen`` overwrites every column with its non-null
 values (and takes over ``source``); an older observation only fills NULL columns. ``first_seen`` = min,
 ``last_seen`` = max. Empty strings are stored as NULL.
 
-Legacy import (first run, idempotent): flight_histories.json (source 'flight:<num>'), reg_histories.json
-('reg:<reg>'), airports/*.json ('board:<icao>'), live_summary.json ('live'), search_index.json (search_queries
-table). Each legacy payload also gets a fetch_log entry (so TTL planning knows when it was fetched). The JSON
-files are only read, never written.
-
 Row dicts returned by ``iter_rows`` use the ``fr24_client.FlightRow`` keys (``id`` = fr24_id) plus
-``first_seen``, ``last_seen``, ``source``; absent strings/timestamps are ``None`` (same as legacy JSON rows),
+``first_seen``, ``last_seen``, ``source``; absent strings/timestamps are ``None``,
 ``status_live`` is bool/None.
 """
 
 from __future__ import annotations
 
-import datetime as _dt
 import hashlib
 import json
 import sqlite3
@@ -100,42 +94,6 @@ class UpsertStats:
 
 
 @dataclass(slots=True)
-class ImportReport:
-    already_done: bool = False
-    flights: int = 0                     # flight-number payloads read
-    regs: int = 0
-    boards: int = 0
-    live: int = 0                        # live_summary rows read (live list + details + detail history)
-    rows_in: int = 0                     # rows read from JSON
-    rows_inserted: int = 0
-    rows_updated: int = 0
-    airports: int = 0                    # airports/*.json files read
-    errors: list[str] = field(default_factory=list)
-    # extra detail (step 3)
-    rows_by_source: dict[str, int] = field(default_factory=dict)   # 'flight'|'reg'|'board'|'live' -> rows read
-    rows_without_id: int = 0             # rows given a synthetic id
-    duplicates: int = 0                  # rows_in - distinct ids across all sources
-    distinct_ids: int = 0
-    missing_after_import: int = 0        # distinct ids NOT found in flight_rows afterwards (must be 0)
-    search_queries: int = 0
-    search_by_flight: int = 0
-    search_by_callsign: int = 0
-    legacy_errors: int = 0               # error entries carried in the legacy files (logged to fetch_log)
-
-    def lines(self) -> list[str]:
-        if self.already_done:
-            return ["旧 JSON 已导入过（跳过）"]
-        return [
-            f"旧 JSON 导入: 班号 {self.flights}  注册号 {self.regs}  看板 {self.boards}  实时 {self.live} 行  "
-            f"搜索 {self.search_queries} 查询",
-            f"  行读入 {self.rows_in} = " + " + ".join(f"{k} {v}" for k, v in self.rows_by_source.items())
-            + f"；不同 id {self.distinct_ids}（重复 {self.duplicates}，无 id {self.rows_without_id}）",
-            f"  新增 {self.rows_inserted}  更新 {self.rows_updated}  导入后缺失 {self.missing_after_import}"
-            + (f"  错误 {len(self.errors)}" if self.errors else ""),
-        ]
-
-
-@dataclass(slots=True)
 class StoreStats:
     rows: int = 0
     min_ts: int | None = None            # min(sched_dep/real_dep)
@@ -179,15 +137,6 @@ def _norm_row(row: dict[str, Any]) -> tuple[str, dict[str, Any], bool]:
     if rid:
         return rid, cols, False
     return synthetic_id(row), cols, True
-
-
-def _iso_to_ts(s: Any) -> int | None:
-    if not s:
-        return None
-    try:
-        return int(_dt.datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc).timestamp())
-    except ValueError:
-        return None
 
 
 def _db_row_to_dict(r: sqlite3.Row) -> dict[str, Any]:
@@ -463,7 +412,7 @@ class FR24Store:
     def search_index(self, target_ops: Iterable[str] = ("CCA", "CAO", "CCD", "BJN"),
                      number_prefixes: Iterable[str] = ("CA", "BJN", "CAO", "CCD")) -> dict[str, Any]:
         """Search index ({'by_flight': {...}, 'by_callsign': {...}, 'by_query': {...}}) rebuilt from the stored
-        queries exactly like legacy fetch_search_index.save_all, or {} when nothing is stored."""
+        queries exactly like the former fetch_search_index.py script, or {} when nothing is stored."""
         ops = tuple(target_ops)
         prefixes = tuple(number_prefixes)
         by_query: dict[str, Any] = {}
@@ -508,132 +457,6 @@ class FR24Store:
         s.stale_targets = stale
         return s
 
-    # ---- legacy import
-    def import_legacy_json(self, cache_dir: Path, *, force: bool = False) -> ImportReport:
-        """One-time import of the legacy JSON caches (see module doc). Idempotent unless force=True
-        (force re-runs the upserts; they are themselves idempotent and fetch_log entries are not duplicated)."""
-        rep = ImportReport()
-        if self.get_meta("legacy_import_done_at") and not force:
-            rep.already_done = True
-            return rep
-        files = legacy_cache_files(Path(cache_dir))
-        all_ids: set[str] = set()
-        stats = UpsertStats()
-
-        def ingest(rows: list[dict], source: str, seen_at: int, bucket: str) -> None:
-            for r in rows:
-                rid, _, synth = _norm_row(r)
-                all_ids.add(rid)
-                rep.rows_without_id += synth
-            rep.rows_in += len(rows)
-            rep.rows_by_source[bucket] = rep.rows_by_source.get(bucket, 0) + len(rows)
-            stats.add(self.upsert_rows(rows, source=source, seen_at=seen_at))
-
-        def log_once(query: str, kind: str, at: int, rows: int, error: str | None = None) -> None:
-            if self.conn.execute("SELECT 1 FROM fetch_log WHERE query=? AND kind=? AND fetched_at=? AND "
-                                 "coalesce(error,'')=coalesce(?, '')", (query, kind, at, error)).fetchone():
-                return
-            self.log_fetch(query, kind, at, 200 if error is None else None, rows, error)
-
-        def load(path: Path) -> dict | None:
-            try:
-                return json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as e:
-                rep.errors.append(f"{path.name}: {type(e).__name__}: {e}")
-                return None
-
-        # flight / reg histories: oldest payload first so newer values win naturally
-        for key, kind in (("flight_histories", "flight"), ("reg_histories", "reg")):
-            if key not in files:
-                continue
-            data = load(files[key])
-            if not data:
-                continue
-            file_ts = _iso_to_ts(data.get("updated_at_utc")) or int(files[key].stat().st_mtime)
-            payloads = data.get("flights") or {}
-            refreshed = [t for t in (_iso_to_ts(p.get("refreshed_at_utc")) for p in payloads.values()) if t]
-            default_ts = min(refreshed) if refreshed else file_ts
-            items = sorted(((_iso_to_ts(p.get("refreshed_at_utc")) or default_ts, q, p) for q, p in payloads.items()),
-                           key=lambda x: (x[0], x[1]))
-            for at, q, p in items:
-                q = str(q).strip().upper()
-                rows = list(p.get("rows") or [])
-                ingest(rows, f"{kind}:{q}", at, kind)
-                self._begin()
-                log_once(q, kind, at, len(rows))
-                self._commit()
-            if kind == "flight":
-                rep.flights = len(payloads)
-            else:
-                rep.regs = len(payloads)
-            self._begin()
-            for err in data.get("errors") or []:
-                if isinstance(err, (list, tuple)) and err:
-                    rep.legacy_errors += 1
-                    log_once(str(err[0]).upper(), kind, file_ts, 0, f"legacy: {str(err[1:])[:200]}")
-            self._commit()
-
-        # airport boards
-        if "airports_dir" in files:
-            for path in sorted(files["airports_dir"].glob("*.json")):
-                data = load(path)
-                if data is None:
-                    continue
-                icao = str(data.get("airport") or path.stem).upper()
-                at = _iso_to_ts(data.get("fetched_at_utc")) or int(path.stat().st_mtime)
-                rows = list(data.get("rows") or [])
-                ingest(rows, f"board:{icao}", at, "board")
-                self._begin()
-                log_once(icao, "board", at, len(rows))
-                self._commit()
-                rep.airports += 1
-                rep.boards += 1
-
-        # live summary
-        if "live_summary" in files:
-            data = load(files["live_summary"])
-            if data:
-                at = _iso_to_ts(data.get("fetched_at_utc")) or int(files["live_summary"].stat().st_mtime)
-                rows = _live_summary_rows(data)
-                ingest(rows, "live", at, "live")
-                rep.live = len(rows)
-
-        # search index (aux table)
-        if "search_index" in files:
-            data = load(files["search_index"])
-            if data:
-                at = _iso_to_ts(data.get("fetched_at_utc")) or int(files["search_index"].stat().st_mtime)
-                self._begin()
-                try:
-                    for q, payload in (data.get("by_query") or {}).items():
-                        self.upsert_search_payload(q, payload or {}, at)
-                    self._commit()
-                except BaseException:
-                    self._rollback()
-                    raise
-                rep.search_queries = len(data.get("by_query") or {})
-                idx = self.search_index()
-                rep.search_by_flight = len(idx.get("by_flight", {}))
-                rep.search_by_callsign = len(idx.get("by_callsign", {}))
-                for name, legacy_n, n in (("by_flight", len(data.get("by_flight") or {}), rep.search_by_flight),
-                                          ("by_callsign", len(data.get("by_callsign") or {}), rep.search_by_callsign)):
-                    if legacy_n != n:
-                        rep.errors.append(f"search_index {name}: legacy {legacy_n} != rebuilt {n}")
-
-        rep.rows_inserted, rep.rows_updated = stats.inserted, stats.updated
-        rep.distinct_ids = len(all_ids)
-        rep.duplicates = rep.rows_in - rep.distinct_ids
-        rep.missing_after_import = len(all_ids - self.has_row_ids(all_ids))
-        if rep.missing_after_import:
-            rep.errors.append(f"{rep.missing_after_import} ids missing after import")
-        self.set_meta("legacy_import_done_at", str(_now()))
-        self.set_meta("legacy_import_report", json.dumps(
-            {k: getattr(rep, k) for k in ("flights", "regs", "boards", "live", "rows_in", "rows_inserted",
-                                          "rows_updated", "airports", "rows_without_id", "duplicates",
-                                          "distinct_ids", "missing_after_import", "search_queries")},
-            ensure_ascii=False))
-        return rep
-
     def close(self) -> None:
         try:
             self.conn.close()
@@ -645,60 +468,6 @@ class FR24Store:
 
     def __exit__(self, *exc) -> None:
         self.close()
-
-
-def _live_summary_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """live_summary.json -> FlightRows: every live-list flight (from its detail when present, else the bare
-    live entry without times, status_live=True), details not in the live list, and each detail's history."""
-    details = data.get("details") or {}
-    rows: list[dict[str, Any]] = []
-
-    def from_detail(d: dict[str, Any], op: str, live: bool) -> dict[str, Any]:
-        tm = d.get("time") or {}
-        return {
-            "id": d.get("id"), "number": d.get("number_default"), "callsign": d.get("callsign"),
-            "airline_icao": d.get("airline_icao") or op, "origin_icao": d.get("origin_icao"),
-            "origin_iata": d.get("origin_iata"), "dest_icao": d.get("dest_icao"), "dest_iata": d.get("dest_iata"),
-            "aircraft_code": d.get("aircraft_code"), "registration": d.get("registration"),
-            "sched_dep": (tm.get("scheduled") or {}).get("departure"),
-            "sched_arr": (tm.get("scheduled") or {}).get("arrival"),
-            "real_dep": (tm.get("real") or {}).get("departure"), "real_arr": (tm.get("real") or {}).get("arrival"),
-            "status_live": True if live else None, "status_text": d.get("status_text"), "status_generic": None,
-        }
-
-    used = set()
-    for op, fls in (data.get("live") or {}).items():
-        for f in fls or []:
-            fid = f.get("id")
-            d = details.get(fid) if fid else None
-            if d:
-                rows.append(from_detail(d, op, True))
-                used.add(fid)
-            else:
-                rows.append({
-                    "id": fid, "number": f.get("number"), "callsign": f.get("callsign"),
-                    "airline_icao": f.get("airline_icao") or op, "origin_icao": None,
-                    "origin_iata": f.get("origin_iata"), "dest_icao": None, "dest_iata": f.get("destination_iata"),
-                    "aircraft_code": f.get("aircraft_code"), "registration": f.get("registration"),
-                    "sched_dep": None, "sched_arr": None, "real_dep": None, "real_arr": None,
-                    "status_live": True, "status_text": None, "status_generic": None,
-                })
-    for fid, d in details.items():
-        if fid not in used:
-            rows.append(from_detail(d, d.get("operator_query") or "", False))
-        for h in d.get("history") or []:
-            tm = h.get("time") or {}
-            rows.append({
-                "id": h.get("id"), "number": h.get("number"), "callsign": None, "airline_icao": None,
-                "origin_icao": h.get("origin_icao"), "origin_iata": h.get("origin_iata"),
-                "dest_icao": h.get("dest_icao"), "dest_iata": h.get("dest_iata"),
-                "aircraft_code": d.get("aircraft_code"), "registration": d.get("registration"),
-                "sched_dep": (tm.get("scheduled") or {}).get("departure"),
-                "sched_arr": (tm.get("scheduled") or {}).get("arrival"),
-                "real_dep": (tm.get("real") or {}).get("departure"), "real_arr": (tm.get("real") or {}).get("arrival"),
-                "status_live": None, "status_text": None, "status_generic": None,
-            })
-    return rows
 
 
 def synthetic_id(row: dict[str, Any]) -> str:
@@ -716,18 +485,3 @@ def synthetic_id(row: dict[str, Any]) -> str:
         sd = ""
     key = "|".join((s("callsign"), s("number"), orig, dest, sd))
     return "nid:" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-
-
-def legacy_cache_files(cache_dir: Path) -> dict[str, Path]:
-    """Existing legacy JSON cache files {'flight_histories': path, 'reg_histories': ..., 'live_summary': ...,
-    'search_index': ..., 'airports_dir': ...} — only those that exist. Implemented (used by status)."""
-    names = {
-        "flight_histories": "flight_histories.json",
-        "reg_histories": "reg_histories.json",
-        "live_summary": "live_summary.json",
-        "search_index": "search_index.json",
-    }
-    out = {k: cache_dir / v for k, v in names.items() if (cache_dir / v).is_file()}
-    if (cache_dir / "airports").is_dir():
-        out["airports_dir"] = cache_dir / "airports"
-    return out

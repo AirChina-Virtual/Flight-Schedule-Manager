@@ -3,15 +3,15 @@
     jm = JobManager(state_dir)                       # STATE_DIR/jobs/<id>.log + <id>.json
     job = jm.start("fetch", "2026-27-1", {"dry_run": True}, user="admin")
     jm.read_log(job["id"], since=0)                  # {'text', 'next', 'job'}
-    jm.cancel(job["id"])                             # Windows CTRL_BREAK / POSIX SIGINT, then terminate, then kill
+    jm.cancel(job["id"])                             # SIGINT to the process group, then terminate, then kill
 
 * Only one job runs at a time (``JobBusy`` -> HTTP 409). Commands and options are whitelisted (``build_argv``).
 * The child runs ``python -u vcca_plan.py --season S <cmd> ...`` with ``PYTHONIOENCODING=utf-8``; stdout+stderr are
   merged and appended line by line to the log. Progress ``[done/total] … 已用 X  预计剩余 Y`` (fr24_fetch) and the
   produced run folder (``decisions.json -> …`` / ``输出目录 …``) are parsed from the output.
-* Interrupt: Windows starts the child in a new process group and sends ``CTRL_BREAK_EVENT`` (vcca_plan.py maps
-  SIGBREAK to KeyboardInterrupt); POSIX starts a new session and sends SIGINT to the group (``os.killpg``). If the
-  child is still alive after ``grace_s`` it is terminated, then killed.
+* Interrupt (Linux server): the child starts a new session and gets SIGINT on its process group (``os.killpg``), so
+  fetch saves its progress like Ctrl+C. If it is still alive after ``grace_s`` it is terminated, then killed.
+  Without ``os.killpg`` (Windows dev machines) cancel simply terminates the child.
 * Records survive restarts; a job left "running" by a dead server is marked "interrupted" on startup.
 """
 
@@ -104,17 +104,16 @@ def _iso(ts: float | None) -> str | None:
 
 def send_interrupt(proc: subprocess.Popen) -> str:
     """Ask the child (and its process group) to stop like Ctrl+C. Returns the method used."""
-    if os.name == "nt":
-        proc.send_signal(signal.CTRL_BREAK_EVENT)
-        return "CTRL_BREAK_EVENT"
-    os.killpg(proc.pid, signal.SIGINT)
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:                     # no process groups (Windows dev machine): plain terminate
+        proc.terminate()
+        return "terminate"
+    killpg(proc.pid, signal.SIGINT)
     return "SIGINT"
 
 
 def popen_kwargs() -> dict[str, Any]:
-    """Process-group flags so the interrupt reaches the child (and its children) but never the server."""
-    if os.name == "nt":
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    """New session (= process group) so the interrupt reaches the child and its children but never the server."""
     return {"start_new_session": True}
 
 
@@ -309,7 +308,7 @@ class JobManager:
             self._save(job)
         try:
             method = send_interrupt(proc)
-        except (OSError, ValueError, AttributeError) as e:   # e.g. no console to deliver CTRL_BREAK to
+        except (OSError, ValueError, AttributeError) as e:   # e.g. the process group is already gone
             method = f"interrupt failed ({e}); terminate"
             try:
                 proc.terminate()

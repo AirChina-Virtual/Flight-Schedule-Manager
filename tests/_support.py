@@ -1,4 +1,4 @@
-"""Shared test helpers: import paths, cached config / plan / legacy results."""
+"""Shared test helpers: import paths, cached config / plan."""
 
 from __future__ import annotations
 
@@ -26,16 +26,3 @@ def plan():
     from vcca import caac
 
     return caac.load_plan(cfg())
-
-
-@functools.lru_cache(maxsize=None)
-def legacy_rebuild():
-    """The ORIGINAL fr24_work/rebuild_vamsys_plan.py module (kept in place; also copied to legacy/)."""
-    import rebuild_vamsys_plan  # noqa: PLC0415
-
-    return rebuild_vamsys_plan
-
-
-@functools.lru_cache(maxsize=None)
-def legacy_plan():
-    return legacy_rebuild().load_raw_preplan()

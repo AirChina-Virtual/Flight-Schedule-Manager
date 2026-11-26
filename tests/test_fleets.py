@@ -1,4 +1,4 @@
-"""fleets: body tier + grade pools + exclusions (plan 5.7), parity with legacy compute_recommended_fleets,
+"""fleets: body tier + grade pools + exclusions (plan 5.7),
 unrated airports, plateau exclusions, widebody downgrade, audit."""
 
 import unittest
@@ -96,28 +96,6 @@ class RecommendTest(unittest.TestCase):
             self.skipTest("no airport excludes all 4D widebodies")
         r = self.rec("CCA", "ZBAA", cands[0], fd2=["763"])
         self.assertTrue(r.needs_review)
-
-
-class LegacyParityTest(unittest.TestCase):
-    """Behaviour-identical to legacy compute_recommended_fleets for every real plan group (only extra: reasons)."""
-
-    def test_parity_all_plan_groups(self):
-        from vcca import caac
-
-        cfg = S.cfg()
-        legacy = S.legacy_rebuild()
-        groups = caac.group_legs(S.plan().legs, dict(cfg.airport_alias))
-        fr_samples = [set(), {"26072"}, {"26077"}, {"26072", "26093"}]
-        n = 0
-        for i, (k, g) in enumerate(sorted(groups.items())):
-            op, cs, o, d = k
-            fr = fr_samples[i % len(fr_samples)]
-            lrows = [{"fd2": l.fd2, "fd19": l.fd19} for l in g.legs]
-            old_ids, *_ = legacy.compute_recommended_fleets(op, o, d, lrows, fr, g.route_type, None)
-            new = F.recommend_fleets(cfg, op, o, d, route_type=g.route_type, plan_fd2=g.fd2_codes, fr24_fleet_ids=fr)
-            self.assertEqual(new.fleet_ids, frozenset(old_ids), k)
-            n += 1
-        self.assertGreater(n, 2000)
 
 
 class AuditTest(unittest.TestCase):

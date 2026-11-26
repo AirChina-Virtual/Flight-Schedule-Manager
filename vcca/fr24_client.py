@@ -3,11 +3,12 @@
 Only this module touches the third-party library ``fr24_work/FlightRadarAPI`` (read-only, never modified).
 ``vcca.config.ensure_flightradarapi_on_path()`` is called before importing ``FlightRadarAPI``.
 
-Ported from:
-  * legacy/fr24_auth.py               credential lookup (.env: season dir, fr24_work, ~), session cache ~/.fr24_session.json
-  * legacy/fetch_flight_histories.py  ``fetch_one_flight`` (flight/list.json by flight or reg), ``parse_item`` row shape
-  * legacy/fetch_airports.py          airport boards (``extract_row``)
-  * legacy/fetch_search_index.py      search index
+Ported from the former standalone scripts (removed; see git history): fr24_auth.py (login + session cache),
+fetch_flight_histories.py (flight/list.json by flight or reg, ``parse_item`` row shape), fetch_airports.py (airport
+boards, ``extract_row``), fetch_search_index.py (search index).
+
+Credentials: environment variables FR24_USER / FR24_PASSWORD only (``config.fr24_credentials``). Session cache:
+``$VCCA_HOME/state/fr24_session.json`` (``default_session_cache_path()``), 6 hours.
 
 Normalised row shape (``FlightRow``; identical keys to legacy flight_histories.json rows, consumed by fr24_store):
   {"id", "number", "callsign", "airline_icao", "origin_icao", "origin_iata", "dest_icao", "dest_iata",
@@ -30,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from .config import fr24_credentials, state_dir
+
 if TYPE_CHECKING:
     from .config import Config
 
@@ -47,7 +50,7 @@ _CODE_KEYS = ("number", "callsign", "airline_icao", "origin_icao", "origin_iata"
               "aircraft_code", "registration")
 _TS_KEYS = ("sched_dep", "sched_arr", "real_dep", "real_arr")
 
-SESSION_CACHE_PATH = Path.home() / ".fr24_session.json"
+SESSION_CACHE_FILE = "fr24_session.json"
 SESSION_MAX_AGE_S = 6 * 3600
 _ALLOWED_CODES = [400, 401, 403, 404, 429, 500, 502, 503, 504]
 
@@ -95,32 +98,9 @@ class AirportInfo:
 
 
 # ------------------------------------------------------------------ credentials / session cache ------------------------
-def _load_env_creds(cfg: "Config | None") -> tuple[str | None, str | None]:
-    """(user, password) from the first .env defining both (order per config.credential_env_candidates), else env vars.
-    Values never leave this module except to FlightRadar24API.login."""
-    from .config import credential_env_candidates
-
-    for path in credential_env_candidates(cfg):
-        if not path.is_file():
-            continue
-        vals: dict[str, str] = {}
-        try:
-            with open(path, encoding="utf-8-sig") as f:
-                for raw in f:
-                    line = raw.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    v = v.strip()
-                    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-                        v = v[1:-1]
-                    vals[k.strip()] = v
-        except OSError:
-            continue
-        if vals.get("FR24_USER") and vals.get("FR24_PASSWORD"):
-            return vals["FR24_USER"], vals["FR24_PASSWORD"]
-    u, p = os.environ.get("FR24_USER"), os.environ.get("FR24_PASSWORD")
-    return (u, p) if u and p else (None, None)
+def default_session_cache_path() -> Path:
+    """$VCCA_HOME/state/fr24_session.json (created on first login; holds a session token, mode 0600)."""
+    return state_dir() / SESSION_CACHE_FILE
 
 
 def _load_session_cache(path: Path, max_age_s: int = SESSION_MAX_AGE_S, now: float | None = None) -> dict | None:
@@ -272,7 +252,7 @@ class FR24Client:
         self.cfg = cfg
         self.timeout = timeout
         self.use_session_cache = use_session_cache
-        self.session_cache_path = Path(session_cache_path) if session_cache_path else SESSION_CACHE_PATH
+        self.session_cache_path = Path(session_cache_path) if session_cache_path else default_session_cache_path()
         self._Core = Core
         self._api = FlightRadar24API(timeout=timeout, max_workers=1,
                                      retry=RetryPolicy(max_attempts=3, base_delay=2.0, max_delay=15.0))
@@ -290,9 +270,9 @@ class FR24Client:
                 self._restore_session(cached)
                 self.session_source = "cache"
                 return
-        user, password = _load_env_creds(self.cfg)
+        user, password = fr24_credentials()
         if not user or not password:
-            raise FR24AuthError("FR24_USER / FR24_PASSWORD 未找到（.env 或环境变量）")
+            raise FR24AuthError("环境变量 FR24_USER / FR24_PASSWORD 未设置（服务器上写在 /etc/vcca/vcca.env）")
         try:
             self._api.login(user, password)
         except Exception as e:  # noqa: BLE001 - LoginError / HTTP errors
@@ -324,7 +304,7 @@ class FR24Client:
         self._subkey = str(cached["subscriptionKey"])
 
     def _save_session(self, ud: dict) -> None:
-        """Same file format as legacy fr24_auth._save_session_cache (so both tools share it)."""
+        """Session cache file (same format as the former fr24_auth.py); owner-only permissions."""
         try:
             jar = self._lib_client._APIClient__session.cookies.jar  # noqa: SLF001
             cookies = [{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path} for c in jar]
@@ -341,8 +321,13 @@ class FR24Client:
             "cookies": cookies,
         }
         try:
+            self.session_cache_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.session_cache_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
             os.replace(tmp, self.session_cache_path)
         except OSError:
             pass
@@ -482,8 +467,5 @@ class FR24Client:
 
 
 def credentials_available(cfg: "Config | None" = None) -> bool:
-    """True when FR24_USER and FR24_PASSWORD are found (never returns/prints the values).
-    Implemented: thin wrapper over config.credential_status."""
-    from .config import credential_status
-
-    return credential_status(cfg)["source"] is not None
+    """True when FR24_USER and FR24_PASSWORD are set (never returns/prints the values)."""
+    return fr24_credentials() != (None, None)

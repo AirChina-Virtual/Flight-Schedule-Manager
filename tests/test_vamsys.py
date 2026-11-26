@@ -1,4 +1,4 @@
-"""VAMSYS read-only loader: counts and parity with legacy load_vamsys_db."""
+"""VAMSYS read-only loader: counts, route fields, read-only access."""
 
 import unittest
 
@@ -22,24 +22,6 @@ class VamsysLoaderTest(unittest.TestCase):
         self.assertEqual(c["routes"], c["commercial_routes"] + c["special_routes"])
         self.assertEqual(sum(c["routes_by_op"].values()), c["routes"])
         self.assertIsNotNone(self.vs.revision)
-
-    def test_parity_with_legacy(self):
-        rev, airports, fleets, aircraft, routes = S.legacy_rebuild().load_vamsys_db()
-        vs = self.vs
-        self.assertEqual(rev, vs.revision)
-        self.assertEqual(set(airports), set(vs.airports))
-        self.assertEqual(set(fleets), set(vs.fleets))
-        self.assertEqual(len(aircraft), len(vs.aircraft))
-        self.assertEqual(len(routes), len(vs.routes))
-        by_id = vs.route_by_id()
-        for f in routes:
-            r = by_id[f["ID"]]
-            self.assertEqual((r.op, r.callsign, r.number, r.orig, r.dest),
-                             (f["_op"], f["_cs"], f["_fn"], f["_orig"], f["_dest"]))
-            self.assertEqual((r.dep_min, r.arr_min, r.dep, r.arr), (f["_dep_min"], f["_arr_min"], f["_dep_hm"], f["_arr_hm"]))
-            self.assertEqual(r.days, frozenset(f["_days"]))
-            self.assertEqual(r.fleet_ids, frozenset(f["_fids"]))
-            self.assertEqual(r.is_special, f["_is_special"])
 
     def test_route_fields(self):
         r = self.vs.routes[0]

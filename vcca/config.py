@@ -797,49 +797,22 @@ def ensure_flightradarapi_on_path() -> Path:
     return FLIGHTRADARAPI_DIR
 
 
-def credential_env_candidates(cfg: Config | None = None) -> list[Path]:
-    """.env search order (same as legacy fr24_auth): season dir, fr24_work, home."""
-    out = []
-    if cfg is not None:
-        out.append(cfg.season_dir / ".env")
-    out += [WORK_DIR / ".env", Path.home() / ".env"]
-    return out
+CREDENTIAL_VARS = ("FR24_USER", "FR24_PASSWORD")
 
 
-def _env_keys(path: Path) -> set[str]:
-    keys = set()
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, val = line.split("=", 1)
-                    if val.strip().strip("'\""):
-                        keys.add(k.strip())
-    except OSError:
-        pass
-    return keys
+def fr24_credentials() -> tuple[str | None, str | None]:
+    """(user, password) from the environment variables FR24_USER / FR24_PASSWORD (on the server: systemd
+    EnvironmentFile /etc/vcca/vcca.env). No .env file search. Callers must never log the values."""
+    u, p = os.environ.get("FR24_USER", ""), os.environ.get("FR24_PASSWORD", "")
+    return (u, p) if u and p else (None, None)
 
 
-def credential_status(cfg: Config | None = None) -> dict[str, Any]:
-    """Which credential source would be used — key presence only, NEVER values.
-    Returns {'source': path|'ENV'|None, 'checked': [(path, has_user, has_password), ...]}."""
-    checked = []
-    source = None
-    for p in credential_env_candidates(cfg):
-        if p.is_file():
-            keys = _env_keys(p)
-            hu, hp = "FR24_USER" in keys, "FR24_PASSWORD" in keys
-            checked.append((str(p), hu, hp))
-            if hu and hp and source is None:
-                source = str(p)
-        else:
-            checked.append((str(p), False, False))
-    env_ok = bool(os.environ.get("FR24_USER")) and bool(os.environ.get("FR24_PASSWORD"))
-    checked.append(("ENV", env_ok, env_ok))
-    if source is None and env_ok:
-        source = "ENV"
-    return {"source": source, "checked": checked}
+def credential_status(cfg: Config | None = None) -> dict[str, Any]:  # noqa: ARG001 - cfg kept for callers
+    """Whether FR24 credentials are set — presence only, NEVER values.
+    Returns {'source': 'ENV'|None, 'checked': [('环境变量 FR24_USER / FR24_PASSWORD', has_user, has_password)]}."""
+    hu, hp = bool(os.environ.get("FR24_USER")), bool(os.environ.get("FR24_PASSWORD"))
+    return {"source": "ENV" if hu and hp else None,
+            "checked": [("环境变量 FR24_USER / FR24_PASSWORD", hu, hp)]}
 
 
 def count_mode(values: Iterable[str]) -> str:

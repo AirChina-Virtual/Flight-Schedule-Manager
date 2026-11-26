@@ -1,11 +1,11 @@
-"""CAAC plan parsing: counts and field-by-field parity with legacy rebuild_vamsys_plan.load_raw_preplan."""
+"""CAAC plan parsing: counts (equal to the former rebuild_vamsys_plan.py results) and grouping."""
 
 import unittest
 
 from tests import _support as S
 from vcca import caac
 
-# Legacy numbers for the 2026-27-1 season files (rebuild_vamsys_plan.py, 2026-11-25).
+# Numbers for the 2026-27-1 season files (verified against the former rebuild_vamsys_plan.py, 2026-11-25).
 LEGACY_RAW_ROWS = 3475
 LEGACY_LEGS = 3571
 LEGACY_NUMBERS = 2087
@@ -35,33 +35,6 @@ class CaacCountsTest(unittest.TestCase):
         single = [g for g in groups.values() if g.is_single_day_only]
         self.assertTrue(all(l.single_day for g in single for l in g.legs))
         self.assertTrue(any(k[1] == "CCA754" for k in groups if groups[k].single_day_legs))
-
-
-@unittest.skipUnless(S.SEASON == "2026-27-1", "legacy parity is for season 2026-27-1")
-class CaacLegacyParityTest(unittest.TestCase):
-    def test_raw_rows_identical(self):
-        legacy_rows, _ = S.legacy_plan()
-        self.assertEqual(S.plan().rows, legacy_rows)
-
-    def test_legs_field_by_field(self):
-        _, legacy_legs = S.legacy_plan()
-        new = [caac.legacy_leg_dict(l) for l in S.plan().legs]
-        self.assertEqual(len(new), len(legacy_legs))
-        diffs = []
-        for i, (a, b) in enumerate(zip(new, legacy_legs)):
-            if a != b:
-                keys = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
-                diffs.append((i, b.get("src_ref"), {k: (a.get(k), b.get(k)) for k in keys}))
-        self.assertEqual(diffs[:5], [], f"{len(diffs)} differing legs")
-
-    def test_rotation_gaps_identical(self):
-        _, legacy_legs = S.legacy_plan()
-        legacy = S.legacy_rebuild().detect_rotation_gaps(legacy_legs)
-        new = caac.detect_rotation_gaps(S.plan().legs)
-        self.assertEqual(set(new), set(legacy))
-        for k, g in new.items():
-            self.assertEqual((g.out_callsign, g.ret_callsign, g.route_type),
-                             (legacy[k]["out_cs"], legacy[k]["ret_cs"], legacy[k]["route_type"]))
 
 
 if __name__ == "__main__":

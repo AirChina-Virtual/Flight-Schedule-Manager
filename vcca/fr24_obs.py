@@ -1,6 +1,6 @@
 """FR24 rows -> unified observations (plan 5.2; step 4).
 
-Port of legacy ``rebuild_vamsys_plan.load_fr24_unified`` (classify / fn_auth / is_cao_ph / norm_ap), but:
+Port of ``load_fr24_unified`` (classify / fn_auth / is_cao_ph / norm_ap) from the former rebuild_vamsys_plan.py, but:
   * input is store rows (fr24_store.FR24Store.iter_rows) — any iterable of FlightRow dicts with an
     extra ``source`` key works, so tests can feed fixtures;
   * CALLSIGN is the primary key (CAO has many records with callsign but no number);

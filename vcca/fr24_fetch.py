@@ -8,7 +8,7 @@ Targets (plan 6.1):
                    with --deep or every ``cfg.fetch.deep_scan_every_days`` (meta ``last_deep_scan_at``); regs never
                    fetched (or whose last fetch failed) are always due.
   boards/search  = only when requested (--boards ICAO,... / --search). Search queries = 5-char prefixes of the
-                   flight targets (legacy fetch_search_index), stored in the store's search_queries table.
+                   flight targets (as the former fetch_search_index.py script), stored in the store's search_queries table.
 
 Tiers (plan 6.2, priorities stored in the ``targets`` table; P1/P2 written back by reconcile.build):
   P0 never fetched / last failed -> due now;  P1 uncertain -> TTL ttl_uncertain_h;  P2 -> TTL ttl_stable_h.
@@ -282,7 +282,7 @@ def stale_reg_targets(store: "FR24Store", derived: Sequence[TargetState]) -> lis
 
 
 def search_prefixes(numbers: Iterable[str], *, width: int = 5) -> list[str]:
-    """Legacy fetch_search_index: one query per distinct 5-char prefix of the flight numbers."""
+    """As the former fetch_search_index.py script: one query per distinct 5-char prefix of the flight numbers."""
     return sorted({str(n).strip().upper()[:width] for n in numbers if len(str(n).strip()) >= 3})
 
 
@@ -532,7 +532,7 @@ def fetch(cfg: "Config", *, deep: bool = False, flights: Iterable[str] | None = 
           regs: Iterable[str] | None = None, boards: Iterable[str] | None = None, search: bool = False,
           dry_run: bool = False, log: LogFn = print, client: "FR24Client | None" = None,
           now: int | None = None) -> FetchRunReport:
-    """CLI entry for ``vcca_plan.py fetch``: open store (import legacy JSON on first run), load plan + VAMSYS,
+    """CLI entry for ``vcca_plan.py fetch``: open store (created on first run), load plan + VAMSYS,
     derive targets, plan, (dry-run: print and return), log in, run. ``client`` may be injected (tests)."""
     from . import caac, vamsys
     from .fr24_store import FR24Store
@@ -541,11 +541,6 @@ def fetch(cfg: "Config", *, deep: bool = False, flights: Iterable[str] | None = 
     regs = list(regs) if regs else None
     boards = list(boards) if boards else None
     with FR24Store.open(cfg) as store:
-        if not store.get_meta("legacy_import_done_at"):
-            log("首次运行：导入旧 JSON 缓存 …")
-            irep = store.import_legacy_json(cfg.cache_dir)
-            for line in irep.lines():
-                log(line)
         plan = caac.load_plan(cfg)
         vs = vamsys.load_vamsys(cfg)
         targets = derive_targets(cfg, plan, vs, store, now=now)

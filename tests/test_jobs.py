@@ -1,5 +1,5 @@
 """Job manager (vcca/jobs.py): argv whitelist, run -> log -> done, progress / run-dir parsing, one job at a time,
-cancel (real platform + mocked POSIX branch), restart recovery. Jobs run a tiny fake script, not vcca_plan.py."""
+cancel (real process + mocked killpg), restart recovery. Jobs run a tiny fake script, not vcca_plan.py."""
 
 import json
 import os
@@ -19,10 +19,6 @@ from vcca import jobs as J
 
 FAKE = textwrap.dedent(r'''
     import signal, sys, time
-    def _brk(*a):
-        raise KeyboardInterrupt
-    if hasattr(signal, "SIGBREAK"):
-        signal.signal(signal.SIGBREAK, _brk)
     args = sys.argv[1:]
     cmd = [a for a in args if not a.startswith("-") and a not in ("S1",)][0]
     try:
@@ -129,21 +125,17 @@ class TestRun(JobTestCase):
 class TestPlatformBranches(unittest.TestCase):
     def test_posix_interrupt_uses_killpg_sigint(self):
         proc = mock.Mock(pid=4321)
-        with mock.patch.object(J.os, "name", "posix"), \
-                mock.patch.object(J.os, "killpg", create=True) as killpg:
+        with mock.patch.object(J.os, "killpg", create=True) as killpg:
             self.assertEqual(J.send_interrupt(proc), "SIGINT")
             killpg.assert_called_once_with(4321, signal.SIGINT)
             self.assertEqual(J.popen_kwargs(), {"start_new_session": True})
         proc.send_signal.assert_not_called()
 
-    def test_windows_interrupt_uses_ctrl_break(self):
-        if not hasattr(signal, "CTRL_BREAK_EVENT"):
-            self.skipTest("Windows only")
+    def test_without_killpg_terminates(self):
         proc = mock.Mock(pid=1)
-        with mock.patch.object(J.os, "name", "nt"):
-            self.assertEqual(J.send_interrupt(proc), "CTRL_BREAK_EVENT")
-            self.assertIn("creationflags", J.popen_kwargs())
-        proc.send_signal.assert_called_once_with(signal.CTRL_BREAK_EVENT)
+        with mock.patch.object(J.os, "killpg", None, create=True):
+            self.assertEqual(J.send_interrupt(proc), "terminate")
+        proc.terminate.assert_called_once_with()
 
     def test_interrupt_failure_falls_back_to_terminate(self):
         with tempfile.TemporaryDirectory() as t:
@@ -172,17 +164,13 @@ class TestPlatformBranches(unittest.TestCase):
             self.assertIsNone(jm.current())
 
 
-class TestCliSigbreak(unittest.TestCase):
-    def test_vcca_plan_maps_sigbreak(self):
+class TestCli(unittest.TestCase):
+    def test_serve_is_not_a_job(self):
         import vcca_plan
 
-        if not hasattr(signal, "SIGBREAK"):
-            self.assertFalse(hasattr(signal, "SIGBREAK"))
-            return
-        with self.assertRaises(KeyboardInterrupt):
-            vcca_plan._sigbreak_to_interrupt(signal.SIGBREAK, None)
         self.assertIn("serve", vcca_plan.COMMANDS)
         self.assertNotIn("serve", J.COMMANDS)
+        self.assertFalse(hasattr(vcca_plan, "_sigbreak_to_interrupt"))
 
 
 if __name__ == "__main__":

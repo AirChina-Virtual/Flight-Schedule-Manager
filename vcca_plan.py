@@ -7,17 +7,17 @@
     python vcca_plan.py export [--run NAME]  decisions.json -> xlsx / csv / html / summary
     python vcca_plan.py run [--deep]         fetch + build + export
     python vcca_plan.py test                 unittest discovery in tests/
-    python vcca_plan.py serve [--host 127.0.0.1] [--port 8770] [--no-browser]   local web front end
-    python vcca_plan.py web-user set NAME | list | delete NAME                   web front end accounts
+    python vcca_plan.py serve [--port 8770]  development web server on 127.0.0.1 (production: gunicorn)
+    python vcca_plan.py web-user set NAME | list | delete NAME      web front end accounts
+    python vcca_plan.py migrate-config --from OLD/season.toml [--write]   old season.toml -> settings.toml + season.toml
 
-Global: --season 2026-27-1 (default: latest folder under F:\\vCCA\\plan containing season.toml)
+Global: --season 2026-27-1 (default: the latest season under $VCCA_HOME/seasons)
+Data directory: $VCCA_HOME (default /srv/vcca), see README.md.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
-import signal
 import sys
 import unittest
 from pathlib import Path
@@ -26,7 +26,7 @@ WORK_DIR = Path(__file__).resolve().parent
 if str(WORK_DIR) not in sys.path:
     sys.path.insert(0, str(WORK_DIR))
 
-for _s in (sys.stdout, sys.stderr):  # console is cp1252 by default on this machine
+for _s in (sys.stdout, sys.stderr):  # never fail on a non-UTF-8 console
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
@@ -35,19 +35,8 @@ for _s in (sys.stdout, sys.stderr):  # console is cp1252 by default on this mach
 from vcca import config as C  # noqa: E402
 
 
-def _sigbreak_to_interrupt(signum, frame):  # noqa: ARG001
-    raise KeyboardInterrupt
-
-
-# The web app cancels a job on Windows with CTRL_BREAK_EVENT (Ctrl+C cannot reach a new process group); treat it as
-# Ctrl+C so fetch saves its progress and exits cleanly. POSIX jobs get SIGINT, which already raises KeyboardInterrupt.
-if hasattr(signal, "SIGBREAK"):
-    try:
-        signal.signal(signal.SIGBREAK, _sigbreak_to_interrupt)
-    except (ValueError, OSError):  # not the main thread (imported by the web app)
-        pass
-
 EXIT_NOT_IMPLEMENTED = 2
+DEV_HOST = "127.0.0.1"
 
 
 def _csv_list(s: str | None) -> list[str] | None:
@@ -154,16 +143,11 @@ def cmd_test(args) -> int:
 
 
 def cmd_serve(args) -> int:
-    """Local web front end: stdlib wsgiref server with one thread per request (Linux servers use gunicorn)."""
-    import threading
-    import webbrowser
+    """Development web server: stdlib wsgiref, one thread per request, 127.0.0.1 only (production: gunicorn behind
+    nginx, see deploy/)."""
     from socketserver import ThreadingMixIn
     from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
-    if args.plan_root:
-        os.environ["VCCA_PLAN_ROOT"] = str(Path(args.plan_root).resolve())
-    if args.state_dir:
-        os.environ["VCCA_STATE_DIR"] = str(Path(args.state_dir).resolve())
     from vcca import webapp
 
     state = C.state_dir()
@@ -187,16 +171,11 @@ def cmd_serve(args) -> int:
 
     app = webapp.create_app()
     try:
-        httpd = make_server(args.host, args.port, app, server_class=_Server, handler_class=_Handler)
+        httpd = make_server(DEV_HOST, args.port, app, server_class=_Server, handler_class=_Handler)
     except OSError as e:
-        print(f"无法监听 {args.host}:{args.port}: {e}")
+        print(f"无法监听 {DEV_HOST}:{args.port}: {e}")
         return 1
-    url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}/"
-    print(f"vCCA 网页前端: {url}   （数据目录 {C.plan_root()}，状态目录 {state}）  Ctrl+C 停止")
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        print("!! 注意：监听非本机地址，局域网内其他电脑也能访问（只有 HTTP，没有加密）。")
-    if not args.no_browser:
-        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    print(f"vCCA 开发服务器: http://{DEV_HOST}:{args.port}/   （数据目录 {C.vcca_home()}）  Ctrl+C 停止")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -270,12 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--deep", action="store_true")
     t = sub.add_parser("test", help="运行规则测试")
     t.add_argument("-v", "--verbose", action="store_true")
-    s = sub.add_parser("serve", help="本机网页前端（默认 http://127.0.0.1:8770/）")
-    s.add_argument("--host", default="127.0.0.1", help="监听地址（默认只允许本机访问）")
+    s = sub.add_parser("serve", help="开发用网页服务器（只监听 127.0.0.1，默认端口 8770）")
     s.add_argument("--port", type=int, default=8770)
-    s.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
-    s.add_argument("--plan-root", help=argparse.SUPPRESS)   # = VCCA_PLAN_ROOT (sandbox / tests)
-    s.add_argument("--state-dir", help=argparse.SUPPRESS)   # = VCCA_STATE_DIR
     w = sub.add_parser("web-user", help="网页前端账号：set <名字>（创建/改密码）、list、delete <名字>")
     w.add_argument("action", choices=["set", "list", "delete"])
     w.add_argument("name", nargs="?")
@@ -287,7 +262,7 @@ def dispatch(args) -> int:
         return COMMANDS[args.cmd](args)
     except NotImplementedError as e:
         what = str(e) or "该功能"
-        print(f"\n[尚未实现] {what}\n这一步属于后续重构阶段（见 重构计划.md 第 9 节），当前可用：status、test。")
+        print(f"\n[尚未实现] {what}\n这一步属于后续重构阶段（见 docs/重构计划.md 第 9 节），当前可用：status、test。")
         return EXIT_NOT_IMPLEMENTED
     except C.ConfigError as e:
         print(str(e))

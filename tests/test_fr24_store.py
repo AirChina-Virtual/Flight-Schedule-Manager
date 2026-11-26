@@ -1,6 +1,5 @@
-"""fr24_store: upsert/accumulation, filters, targets, legacy import counts (fixtures cut from the real cache)."""
+"""fr24_store: upsert/accumulation, filters, targets, search index, read-only mode."""
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,9 +7,6 @@ from pathlib import Path
 from tests import _support as S  # noqa: F401  (sys.path)
 from vcca import fr24_store as FS
 from vcca.models import Priority, TargetKind, TargetState
-
-FIX = Path(__file__).resolve().parent / "fixtures" / "fetch"
-
 
 def _row(i="a1", **kw):
     r = {k: None for k in ("id", "number", "callsign", "airline_icao", "origin_icao", "origin_iata", "dest_icao",
@@ -124,72 +120,6 @@ class TargetsLogMetaTest(_TmpStore):
         finally:
             ro.close()
         self.st = FS.FR24Store(Path(self._d.name) / "c.db")
-
-
-def _expected_legacy_ids():
-    """Independent count of the fixture rows: every (id or synthetic id) per source."""
-    ids, n = set(), 0
-    for name in ("flight_histories.json", "reg_histories.json"):
-        for p in json.loads((FIX / name).read_text(encoding="utf-8"))["flights"].values():
-            for r in p["rows"]:
-                n += 1
-                ids.add(r.get("id") or FS.synthetic_id(r))
-    for path in (FIX / "airports").glob("*.json"):
-        for r in json.loads(path.read_text(encoding="utf-8"))["rows"]:
-            n += 1
-            ids.add(r.get("id") or FS.synthetic_id(r))
-    live = json.loads((FIX / "live_summary.json").read_text(encoding="utf-8"))
-    for fls in live["live"].values():
-        for f in fls:
-            n += 1
-            ids.add(f["id"])
-    for fid, d in live["details"].items():
-        if not any(f["id"] == fid for fls in live["live"].values() for f in fls):
-            n += 1
-            ids.add(fid)
-        for h in d.get("history") or []:
-            n += 1
-            ids.add(h["id"])
-    return ids, n
-
-
-class LegacyImportTest(_TmpStore):
-    def test_import_counts_no_loss_idempotent(self):
-        rep = self.st.import_legacy_json(FIX)
-        ids, n = _expected_legacy_ids()
-        self.assertEqual(rep.errors, [])
-        self.assertEqual((rep.flights, rep.regs, rep.boards, rep.airports), (3, 1, 1, 1))
-        self.assertEqual(rep.rows_in, n)
-        self.assertEqual(rep.distinct_ids, len(ids))
-        self.assertEqual(rep.duplicates, n - len(ids))
-        self.assertGreaterEqual(rep.duplicates, 1)                 # reg payload repeats a flight-history row
-        self.assertGreater(rep.rows_without_id, 0)
-        self.assertEqual(rep.missing_after_import, 0)
-        self.assertEqual(self.st.count_rows(), len(ids))
-        self.assertEqual(set(r["id"] for r in self.st.iter_rows()), ids)
-        self.assertEqual(sum(rep.rows_by_source.values()), n)
-        self.assertEqual(rep.legacy_errors, 1)
-        self.assertEqual(self.st.last_fetch("CA9999", "flight")["http_status"], None)
-        self.assertIsNotNone(self.st.last_fetch("CA1002", "flight"))
-        self.assertIsNotNone(self.st.last_fetch("ZBAA", "board"))
-        # search index rebuilt identically
-        legacy_si = json.loads((FIX / "search_index.json").read_text(encoding="utf-8"))
-        si = self.st.search_index()
-        self.assertEqual(set(si["by_flight"]), set(legacy_si["by_flight"]))
-        self.assertEqual(set(si["by_callsign"]), set(legacy_si["by_callsign"]))
-        # idempotent
-        log_n = self.st.conn.execute("SELECT count(*) FROM fetch_log").fetchone()[0]
-        self.assertTrue(self.st.import_legacy_json(FIX).already_done)
-        rep2 = self.st.import_legacy_json(FIX, force=True)
-        self.assertEqual((rep2.rows_inserted, rep2.rows_updated), (0, 0))
-        self.assertEqual(self.st.count_rows(), len(ids))
-        self.assertEqual(self.st.conn.execute("SELECT count(*) FROM fetch_log").fetchone()[0], log_n)
-
-    def test_live_rows_shape(self):
-        self.st.import_legacy_json(FIX)
-        live = [r for r in self.st.iter_rows() if r["source"] == "live" and r["status_live"]]
-        self.assertTrue(live)
-        self.assertTrue(all(r["airline_icao"] for r in live))
 
 
 if __name__ == "__main__":

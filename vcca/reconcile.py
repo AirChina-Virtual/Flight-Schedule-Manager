@@ -1,13 +1,12 @@
 """Plan x FR24 x VAMSYS reconciliation -> decisions (plan 5.5 / 5.6 / 5.8; step 5).
 
-Ports the decision part of legacy ``rebuild_vamsys_plan.main`` and ``calibrate_slots_with_fr24``.
+Ports the decision part of the former ``rebuild_vamsys_plan.main`` (script removed; see git history) and ``calibrate_slots_with_fr24``.
 Inputs are fully typed (no string-matching on notes). Output: ``BuildResult`` -> decisions.json.
 
 Flow of ``build`` (CLI ``vcca_plan.py build``):
   cfg -> caac.load_plan -> caac.group_legs(alias) + caac.detect_rotation_gaps
       -> vamsys.load_vamsys
       -> fr24_store (readonly) rows -> fr24_obs.build_observations -> evidence.build_all_evidence
-         (fallback while the store is empty / missing: legacy JSON caches, ``_rows_from_legacy_json``)
       -> reconcile(...) -> BuildResult
       -> check_closure (abort on error) -> models.dump_decisions(run_dir/'decisions.json')
       -> store.upsert_targets(result.target_states)   (refresh tiers for the next fetch, plan 6.2)
@@ -1234,72 +1233,9 @@ def target_states_from(evidence: Mapping[RouteKey, Evidence], decisions: Iterabl
 # =====================================================================================================================
 # data sources
 # =====================================================================================================================
-def _load_json(p: Path) -> Any:
-    with open(p, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _rows_from_legacy_json(cache_dir: Path) -> tuple[list[dict], dict[str, Any]]:
-    """Legacy fr24_cache/*.json -> (FlightRow dicts with ``source``, extras{'search_index','fetched_numbers',
-    'last_fetch','airport_names'}). Read-only; used while fr24_cache.db is missing or empty."""
-    cache_dir = Path(cache_dir)
-    rows: list[dict] = []
-    extras: dict[str, Any] = {"search_index": {}, "fetched_numbers": set(), "last_fetch": "", "airport_names": {}}
-    p = cache_dir / "live_summary.json"
-    if p.is_file():
-        live = _load_json(p)
-        details = live.get("details") or {}
-        for op, fls in (live.get("live") or {}).items():
-            for f in fls:
-                d = details.get(f.get("id"))
-                if d:
-                    tm = d.get("time") or {}
-                    sch, real = tm.get("scheduled") or {}, tm.get("real") or {}
-                    rows.append({"id": d.get("id") or f.get("id"), "number": d.get("number_default") or "",
-                                 "callsign": d.get("callsign") or "", "airline_icao": d.get("airline_icao") or op,
-                                 "origin_icao": d.get("origin_icao"), "origin_iata": d.get("origin_iata"),
-                                 "dest_icao": d.get("dest_icao"), "dest_iata": d.get("dest_iata"),
-                                 "aircraft_code": d.get("aircraft_code"), "registration": d.get("registration"),
-                                 "sched_dep": sch.get("departure"), "sched_arr": sch.get("arrival"),
-                                 "real_dep": real.get("departure"), "real_arr": real.get("arrival"),
-                                 "status_live": True, "status_text": d.get("status_text"), "status_generic": "",
-                                 "ev_ts": f.get("time"), "source": "live"})
-                else:
-                    rows.append({"id": f.get("id"), "number": f.get("number") or "", "callsign": f.get("callsign") or "",
-                                 "airline_icao": f.get("airline_icao") or op, "origin_icao": None,
-                                 "origin_iata": f.get("origin_iata"), "dest_icao": None,
-                                 "dest_iata": f.get("destination_iata"), "aircraft_code": f.get("aircraft_code"),
-                                 "registration": f.get("registration"), "sched_dep": None, "sched_arr": None,
-                                 "real_dep": None, "real_arr": None, "status_live": True, "status_text": "",
-                                 "status_generic": "", "ev_ts": f.get("time"), "source": "live"})
-    ad = cache_dir / "airports"
-    if ad.is_dir():
-        for fp in sorted(ad.glob("*.json")):
-            payload = _load_json(fp)
-            icao = fp.stem.upper()
-            for r in payload.get("rows") or []:
-                rows.append(dict(r, source=f"board:{icao}"))
-    p = cache_dir / "flight_histories.json"
-    if p.is_file():
-        fh = _load_json(p)
-        extras["last_fetch"] = fh.get("updated_at_utc") or ""
-        for num, payload in (fh.get("flights") or {}).items():
-            extras["fetched_numbers"].add(num.upper())
-            for r in payload.get("rows") or []:
-                rows.append(dict(r, source=f"flight:{num.upper()}"))
-    p = cache_dir / "reg_histories.json"
-    if p.is_file():
-        for reg, payload in (_load_json(p).get("flights") or {}).items():
-            for r in payload.get("rows") or []:
-                rows.append(dict(r, source=f"reg:{reg}"))
-    p = cache_dir / "search_index.json"
-    if p.is_file():
-        extras["search_index"] = _load_json(p)
-    return rows, extras
-
-
 def _load_fr24_rows(cfg: "Config", log: LogFn) -> tuple[list[dict], dict[str, Any], str]:
-    """FR24Store when fr24_cache.db exists with rows, else the legacy JSON caches. Never creates the DB."""
+    """Rows from FR24Store (fr24_cache.db, the only FR24 source); no rows when it is missing/empty. Never creates
+    the DB."""
     if cfg.cache_db.is_file():
         try:
             from .fr24_store import FR24Store
@@ -1320,14 +1256,12 @@ def _load_fr24_rows(cfg: "Config", log: LogFn) -> tuple[list[dict], dict[str, An
                         log(f"FR24 缓存附加信息读取失败（忽略）：{e}")
                     log(f"FR24 数据源：{cfg.cache_db}（{n} 行）")
                     return rows, extras, "store"
-                log(f"FR24 数据源：{cfg.cache_db} 为空，改用旧 JSON 缓存")
-        except NotImplementedError:
-            log("FR24 数据源：fr24_store 尚未实现，改用旧 JSON 缓存")
+                log(f"!! FR24 缓存 {cfg.cache_db} 为空（先运行 fetch，或在数据页导入 fr24_cache.db）")
         except Exception as e:  # noqa: BLE001
-            log(f"FR24 数据源：打开 {cfg.cache_db} 失败（{e}），改用旧 JSON 缓存")
-    rows, extras = _rows_from_legacy_json(cfg.cache_dir)
-    log(f"FR24 数据源：旧 JSON 缓存 {cfg.cache_dir}（{len(rows)} 行）")
-    return rows, extras, "legacy_json"
+            log(f"!! FR24 缓存 {cfg.cache_db} 打开失败：{e}")
+    else:
+        log(f"!! FR24 缓存 {cfg.cache_db} 不存在（先运行 fetch，或在数据页导入 fr24_cache.db）")
+    return [], {"search_index": {}, "fetched_numbers": set(), "last_fetch": "", "airport_names": {}}, "none"
 
 
 @dataclass(slots=True)
